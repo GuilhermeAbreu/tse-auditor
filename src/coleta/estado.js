@@ -12,7 +12,8 @@ export function statusDaUf(u, coleta) {
 // Junta o manifest e o coletor no objeto que o painel e o CLI exibem.
 // Seções agregadas não contam no total (não têm arquivos próprios); "sem arquivos" conta como
 // concluída para o progresso, mas aparece separada, nunca como "ok".
-export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres }) {
+// `ufs` (opcional) limita o estado às UFs da configuração atual; o manifest pode ter outras.
+export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres, ufs: filtro }) {
   const coleta = { ...coletor.estado, velocidadeBps: coletor.velocidadeBps() };
   let ufsManifest, resumo, errosSecoes, eventos, manifestErro;
   let falha = null;
@@ -46,6 +47,7 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres 
     };
   }
 
+  if (filtro) ufsManifest = ufsManifest.filter((u) => filtro.includes(u.uf));
   const porUf = new Map(ufsManifest.map((u) => [u.uf, {
     uf: u.uf, pausada: u.pausada === 1, total: 0, concluidas: 0, erros: 0, semArquivos: 0, agregadas: 0, bytes: 0,
   }]));
