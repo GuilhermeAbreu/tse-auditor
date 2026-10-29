@@ -13,6 +13,7 @@ function json(res, status, corpo) {
   res.end(JSON.stringify(corpo));
 }
 
+// O intervalo é lido a cada envio: mudar a configuração muda o ritmo das conexões abertas.
 function sse(req, res, obterEstado, intervaloMs) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   let ativo = true;
@@ -24,7 +25,7 @@ function sse(req, res, obterEstado, intervaloMs) {
     } catch (err) {
       res.write(`event: falha\ndata: ${JSON.stringify(err.message)}\n\n`);
     }
-    if (ativo) timer = setTimeout(enviar, intervaloMs);
+    if (ativo) timer = setTimeout(enviar, intervaloMs());
   };
   req.on('close', () => {
     ativo = false;
@@ -78,9 +79,10 @@ async function aplicarConfig(req, res, controle) {
     if (err.status === 413) res.setHeader('connection', 'close');
     return json(res, err.status, { erro: err.message });
   }
-  const { pleitos, ufs, concorrencia, iniciar } = corpo ?? {};
+  if (!corpo || typeof corpo !== 'object' || Array.isArray(corpo)) return json(res, 400, { erro: 'envie um objeto JSON' });
+  const { iniciar, ...config } = corpo;
   try {
-    const atual = await controle.aplicar({ pleitos, ufs, concorrencia }, { iniciar: iniciar === true });
+    const atual = await controle.aplicar(config, { iniciar: iniciar === true });
     return json(res, 200, { ok: true, atual });
   } catch (err) {
     return json(res, 400, { erro: err.message });
@@ -89,8 +91,9 @@ async function aplicarConfig(req, res, controle) {
 
 // Painel local: página estática, estado em JSON, estado ao vivo por SSE, configuração e controles da coleta.
 // Só aceita Host/Origin locais e POST com cabeçalho próprio (defesa contra CSRF e DNS rebinding).
-export function criarPainel({ controle, intervaloMs = 2000 }) {
+export function criarPainel({ controle }) {
   const obterEstado = () => controle.obterEstado();
+  const intervaloMs = () => controle.intervaloPainelMs();
   const servidor = http.createServer(async (req, res) => {
     try {
       if (!permitido(req, servidor.address()?.port)) return json(res, 403, { erro: 'acesso negado' });
@@ -105,7 +108,13 @@ export function criarPainel({ controle, intervaloMs = 2000 }) {
       if (req.method === 'GET' && pathname === '/api/estado') return json(res, 200, await obterEstado());
       if (req.method === 'GET' && pathname === '/api/eventos') return sse(req, res, obterEstado, intervaloMs);
       if (req.method === 'GET' && pathname === '/api/config') {
-        return json(res, 200, { atual: controle.configuracao(), disponiveis: controle.disponiveis() });
+        return json(res, 200, {
+          atual: controle.configuracao(),
+          padroes: controle.padroes,
+          limites: controle.limites(),
+          disponiveis: controle.disponiveis(),
+          somenteLeitura: { ...controle.somenteLeitura(), porta: servidor.address()?.port },
+        });
       }
       if (req.method === 'POST' && pathname === '/api/config') return aplicarConfig(req, res, controle);
 

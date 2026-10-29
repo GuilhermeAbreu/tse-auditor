@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { pastaDados } from '../config.js';
+import { PADRAO, pastaDados } from '../config.js';
 import { caminhoConfigSalva, salvarConfig } from '../configSalva.js';
 import { UFS } from '../ufs.js';
 import { HttpClient } from '../net/http.js';
@@ -9,14 +9,14 @@ import { Manifest } from '../storage/manifest.js';
 import { bytesLivres as bytesLivresDoDisco, garantirVolume } from '../storage/disco.js';
 import { Coletor } from './coletor.js';
 import { montarEstado } from './estado.js';
+import { LIMITES, normalizarOpcoes, padroes } from './opcoes.js';
 
-export const CONCORRENCIA_MAX = 16;
-
+const GB = 1024 ** 3;
 const dataIso = (dt) => dt.split('/').reverse().join('-'); // dd/mm/aaaa → aaaa-mm-dd
 
-// Dono da configuração da coleta (pleitos, UFs, concorrência) e dos objetos vivos: manifest,
-// cliente HTTP e coletor. Trocar a configuração para o coletor atual, troca o manifest se o
-// ciclo mudou e monta um coletor novo; o que já foi baixado continua no manifest.
+// Dono da configuração da coleta e dos objetos vivos: manifest, cliente HTTP e coletor.
+// Aplicar uma configuração nova para o coletor atual, reabre o manifest se a pasta ou o
+// intervalo de gravação mudou e monta um coletor novo; o que já foi baixado continua no manifest.
 export class ControleColeta {
   #config = null;
   #coletor = null;
@@ -25,13 +25,14 @@ export class ControleColeta {
   #fila = Promise.resolve();
 
   constructor({
-    eleicoes, hd, base, ambiente, userAgent, minLivreBytes, dadosFixo,
+    eleicoes, hd = PADRAO.hd, base, ambiente, dadosFixo,
     arquivoConfig = caminhoConfigSalva(),
-    criarHttp = (concorrencia) => new HttpClient({ concorrencia, userAgent }),
+    criarHttp = (opcoes) => new HttpClient(opcoes),
     criarColetor = (opcoes) => new Coletor(opcoes),
     bytesLivres = bytesLivresDoDisco,
   }) {
-    Object.assign(this, { eleicoes, hd, base, ambiente, minLivreBytes, dadosFixo, arquivoConfig, criarHttp, criarColetor, bytesLivres });
+    Object.assign(this, { eleicoes, base, ambiente, dadosFixo, arquivoConfig, criarHttp, criarColetor, bytesLivres });
+    this.padroes = padroes({ hd });
   }
 
   get coletor() {
@@ -43,7 +44,20 @@ export class ControleColeta {
   }
 
   configuracao() {
-    return this.#config ? { ...this.#config, dados: this.#dados } : null;
+    return this.#config ? structuredClone({ ...this.#config, dados: this.#dados }) : null;
+  }
+
+  intervaloPainelMs() {
+    return (this.#config ?? this.padroes).intervaloPainelMs;
+  }
+
+  // O que o painel mostra mas não deixa mudar (a porta o servidor acrescenta).
+  somenteLeitura() {
+    return { base: this.base, ambiente: this.ambiente, dadosFixo: this.dadosFixo ?? null };
+  }
+
+  limites() {
+    return LIMITES;
   }
 
   disponiveis() {
@@ -58,8 +72,13 @@ export class ControleColeta {
     return { pleitos, ufs: UFS };
   }
 
-  // Lança Error com mensagem em português se a configuração não serve.
-  validar({ pleitos, ufs, concorrencia } = {}) {
+  // Completa a entrada com a configuração atual (ou os padrões) e valida.
+  // Lança Error com mensagem em português se algo não serve.
+  validar(entrada = {}) {
+    const e = entrada ?? {};
+    const anterior = this.#config ?? { ...this.padroes, pleitos: undefined, ufs: UFS };
+    const pleitos = e.pleitos ?? anterior.pleitos;
+    const ufs = e.ufs ?? anterior.ufs;
     if (!Array.isArray(pleitos) || pleitos.length === 0) throw new Error('escolha ao menos um pleito');
     if (!Array.isArray(ufs) || ufs.length === 0) throw new Error('escolha ao menos uma UF');
     const escolhidos = [...new Set(pleitos.map(String))].map((cd) => {
@@ -71,13 +90,10 @@ export class ControleColeta {
     if (ciclos.length !== 1) throw new Error(`os pleitos precisam ser do mesmo ciclo: ${ciclos.join(', ')}`);
     const normalizadas = [...new Set(ufs.map((u) => String(u).trim().toLowerCase()))];
     for (const uf of normalizadas) if (!UFS.includes(uf)) throw new Error(`UF desconhecida: ${uf}`);
-    if (!Number.isInteger(concorrencia) || concorrencia < 1 || concorrencia > CONCORRENCIA_MAX) {
-      throw new Error(`a concorrência precisa ser um inteiro de 1 a ${CONCORRENCIA_MAX}: ${concorrencia}`);
-    }
     return {
       pleitos: escolhidos.map((p) => p.cd),
       ufs: UFS.filter((u) => normalizadas.includes(u)), // ordem de coleta
-      concorrencia,
+      ...normalizarOpcoes(e, anterior),
       ciclo: ciclos[0],
     };
   }
@@ -91,39 +107,53 @@ export class ControleColeta {
 
   async #aplicar(config, { iniciar = false, salvar = true }) {
     const nova = this.validar(config);
-    const dados = this.dadosFixo ?? pastaDados(this.hd, nova.ciclo);
+    const dados = this.dadosFixo ?? pastaDados(nova.hd, nova.ciclo);
+    const outraPasta = dados !== this.#dados;
+    const reabrir = outraPasta || nova.intervaloCommitMs !== this.#config?.intervaloCommitMs;
+    const abrir = () => new Manifest(path.join(dados, 'manifest.sqlite'), { intervaloCommitMs: nova.intervaloCommitMs });
 
-    // Abre o manifest novo antes de parar o atual: se o HD não estiver lá, nada muda.
+    // Pasta nova: abre o manifest antes de parar o atual; se o HD não estiver lá, nada muda.
     let manifest = this.#manifest;
-    if (dados !== this.#dados) {
-      if (!this.dadosFixo) await garantirVolume(this.hd);
+    if (outraPasta) {
+      if (!this.dadosFixo) await garantirVolume(nova.hd);
       await mkdir(dados, { recursive: true });
-      manifest = new Manifest(path.join(dados, 'manifest.sqlite'));
+      manifest = abrir();
     }
 
     await this.#pararColetor();
-    if (manifest !== this.#manifest) this.#fecharManifest();
+    if (reabrir) this.#fecharManifest();
+    if (reabrir && !outraPasta) {
+      // mesmo arquivo: só dá para reabrir depois de fechar
+      try {
+        manifest = abrir();
+      } catch (err) {
+        this.#esquecer();
+        throw new Error(`não foi possível reabrir o manifest: ${err.message}`);
+      }
+    }
 
-    const { templates } = this.eleicoes;
     this.#manifest = manifest;
     this.#dados = dados;
     this.#config = nova;
     this.#coletor = this.criarColetor({
       manifest,
-      http: this.criarHttp(nova.concorrencia),
-      urls: criarUrls({ base: this.base, ambiente: this.ambiente, templates }),
+      http: this.criarHttp({ concorrencia: nova.concorrencia, ...nova.http }),
+      urls: criarUrls({ base: this.base, ambiente: this.ambiente, templates: this.eleicoes.templates }),
       pastaDados: dados,
       ciclo: nova.ciclo,
       pleitos: nova.pleitos,
       ufs: nova.ufs,
-      minLivreBytes: this.minLivreBytes,
+      minLivreBytes: nova.minLivreGB * GB,
       concorrencia: nova.concorrencia,
+      tentativasVerificacao: nova.tentativasVerificacao,
+      limiteFalhasRede: nova.limiteFalhasRede,
       bytesLivres: this.bytesLivres,
     });
 
     if (salvar) {
+      const { ciclo, ...salvavel } = nova;
       try {
-        await salvarConfig(this.arquivoConfig, nova);
+        await salvarConfig(this.arquivoConfig, salvavel);
       } catch (err) {
         try {
           manifest.registrarEvento('aviso', null, `não foi possível salvar a configuração em ${this.arquivoConfig}: ${err.message}`);
@@ -134,6 +164,13 @@ export class ControleColeta {
     }
     if (iniciar) this.#coletor.executar(); // roda em segundo plano
     return this.configuracao();
+  }
+
+  #esquecer() {
+    this.#manifest = null;
+    this.#coletor = null;
+    this.#config = null;
+    this.#dados = null;
   }
 
   async #pararColetor() {

@@ -6,7 +6,7 @@ import { UFS } from './ufs.js';
 
 const lista = (texto) => texto.split(',').map((x) => x.trim()).filter(Boolean);
 
-// Última configuração aplicada (pleitos, UFs, concorrência). Fica na pasta de configuração do
+// Última configuração aplicada (pleitos, UFs e as opções de src/coleta/opcoes.js). Fica na pasta de configuração do
 // usuário, nunca no HD. TSE_CONFIG troca o caminho (os testes usam um arquivo temporário).
 export function caminhoConfigSalva(env = process.env) {
   if (env.TSE_CONFIG) return env.TSE_CONFIG;
@@ -24,21 +24,22 @@ export async function lerConfigSalva(caminho) {
     throw err;
   }
   try {
-    const { pleitos, ufs, concorrencia } = JSON.parse(texto);
-    return { pleitos, ufs, concorrencia };
+    const config = JSON.parse(texto);
+    return config && typeof config === 'object' && !Array.isArray(config) ? config : null;
   } catch {
     return null;
   }
 }
 
-export async function salvarConfig(caminho, { pleitos, ufs, concorrencia }) {
+export async function salvarConfig(caminho, config) {
   await mkdir(path.dirname(caminho), { recursive: true });
-  await writeFile(`${caminho}.part`, `${JSON.stringify({ pleitos, ufs, concorrencia }, null, 2)}\n`);
+  await writeFile(`${caminho}.part`, `${JSON.stringify(config, null, 2)}\n`);
   await rename(`${caminho}.part`, caminho);
 }
 
-// Configuração inicial do painel: as opções da linha de comando valem sobre a salva;
-// sem nenhuma das duas, o painel abre sem configuração e mostra o formulário.
+// Configuração inicial do painel: as opções da linha de comando valem sobre a salva, e a salva
+// sobre os padrões (o que faltar o ControleColeta completa). Sem pleito em nenhuma das duas,
+// o painel abre sem configuração e mostra o formulário.
 export function configInicial(opcoes, salva) {
   const flags = opcoes.pleito !== undefined || opcoes.uf !== undefined || opcoes.concorrencia !== undefined;
   if (!flags) return salva ? { config: salva, origem: 'salva' } : null;
@@ -46,6 +47,7 @@ export function configInicial(opcoes, salva) {
   if (!pleitos?.length) return null;
   return {
     config: {
+      ...salva,
       pleitos,
       ufs: opcoes.uf ? lista(opcoes.uf) : salva?.ufs ?? UFS,
       concorrencia: opcoes.concorrencia ?? salva?.concorrencia ?? PADRAO.concorrencia,

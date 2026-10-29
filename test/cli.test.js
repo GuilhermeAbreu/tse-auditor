@@ -83,7 +83,7 @@ test('coletar sem --dados recusa HD ausente', async (t) => {
 test('--concorrencia e --porta inválidos são recusados', async (t) => {
   await assert.rejects(cli(t, ['coletar', '--pleito', '3220', '--concorrencia', '0']), /inteiro positivo/);
   await assert.rejects(cli(t, ['painel', '--pleito', '3220', '--porta', 'abc']), /inteiro não negativo/);
-  await assert.rejects(cli(t, ['coletar', '--pleito', '3220', '--uf', 'ac', '--concorrencia', '17']), /de 1 a 16/);
+  await assert.rejects(cli(t, ['coletar', '--pleito', '3220', '--uf', 'ac', '--concorrencia', '65']), /de 1 a 64/);
 });
 
 test('painel sem opções nem configuração salva abre sem configuração e aceita uma pelo painel', async (t) => {
@@ -101,14 +101,15 @@ test('painel sem opções nem configuração salva abre sem configuração e ace
     body: JSON.stringify({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 2, iniciar: false }),
   });
   assert.equal(r.status, 200);
-  assert.deepEqual(JSON.parse(await readFile(tseConfig, 'utf8')), { pleitos: ['3220'], ufs: ['ac'], concorrencia: 2 });
+  const salvo = JSON.parse(await readFile(tseConfig, 'utf8'));
+  assert.deepEqual([salvo.pleitos, salvo.ufs, salvo.concorrencia, salvo.http.tentativas], [['3220'], ['ac'], 2, 8]);
   assert.equal(await encerrar(), 0);
 });
 
 test('painel usa a configuração salva e as opções valem sobre ela', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-cli-painel-'));
   const tseConfig = path.join(dir, 'config.json');
-  await writeFile(tseConfig, JSON.stringify({ pleitos: ['3220', '3221'], ufs: ['ac', 'al'], concorrencia: 3 }));
+  await writeFile(tseConfig, JSON.stringify({ pleitos: ['3220', '3221'], ufs: ['ac', 'al'], concorrencia: 3, intervaloPainelMs: 900 }));
   const dados = path.join(dir, 'dados');
 
   let painel = await subirPainel(t, ['--dados', dados, '--sem-iniciar'], { tseConfig });
@@ -118,7 +119,7 @@ test('painel usa a configuração salva e as opções valem sobre ela', async (t
 
   painel = await subirPainel(t, ['--dados', dados, '--sem-iniciar', '--pleito', '3221', '--concorrencia', '5'], { tseConfig });
   ({ atual } = await (await fetch(`${painel.base}/api/config`)).json());
-  assert.deepEqual([atual.pleitos, atual.ufs, atual.concorrencia], [['3221'], ['ac', 'al'], 5]);
+  assert.deepEqual([atual.pleitos, atual.ufs, atual.concorrencia, atual.intervaloPainelMs], [['3221'], ['ac', 'al'], 5, 900]);
   assert.equal(await painel.encerrar(), 0);
   assert.deepEqual(JSON.parse(await readFile(tseConfig, 'utf8')).pleitos, ['3221']);
 });
