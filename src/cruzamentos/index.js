@@ -1,0 +1,73 @@
+// Etapa 3: roda todos os cruzamentos de uma UF sobre parquet/<UF>/ e grava parquet/<UF>/achados.parquet.
+import path from 'node:path';
+import { rename, rm } from 'node:fs/promises';
+import { DuckDBInstance } from '@duckdb/node-api';
+import { carregarParquet, lit, prepararContexto } from './comum.js';
+import * as limites from './limites.js';
+import * as turnos from './turnos.js';
+import * as mesario from './mesario.js';
+import * as horarios from './horarios.js';
+
+export const CRUZAMENTOS = [limites, turnos, mesario, horarios];
+
+const COLUNAS = [
+  ['cruzamento', 'VARCHAR'], ['uf', 'VARCHAR'], ['mun', 'VARCHAR'], ['zona', 'VARCHAR'], ['secao', 'VARCHAR'],
+  ['pleito', 'INTEGER'], ['sinal', 'VARCHAR'], ['pontuacao', 'INTEGER'], ['valor', 'DOUBLE'], ['referencia', 'DOUBLE'],
+  ['explicacoesCandidatas', 'VARCHAR'], ['detalhe', 'VARCHAR'],
+];
+
+export async function rodarCruzamentos(db, { uf }) {
+  await prepararContexto(db, { uf });
+  const todos = [];
+  for (const c of CRUZAMENTOS) todos.push(...(await c.executar(db, { uf })));
+  return todos;
+}
+
+export async function analisarUF({ dados, uf }) {
+  const pasta = path.join(dados, 'parquet', uf.toUpperCase());
+  const instancia = await DuckDBInstance.create(':memory:');
+  const db = await instancia.connect();
+  try {
+    await carregarParquet(db, pasta);
+    const rows = await rodarCruzamentos(db, { uf });
+    await db.run(`CREATE TABLE achados (${COLUNAS.map(([c, t]) => `"${c}" ${t}`).join(', ')})`);
+    const ap = await db.createAppender('achados');
+    for (const r of rows) {
+      for (const [c, t] of COLUNAS) {
+        const v = r[c];
+        if (v == null) ap.appendNull();
+        else if (t === 'INTEGER') ap.appendInteger(Number(v));
+        else if (t === 'DOUBLE') ap.appendDouble(Number(v));
+        else ap.appendVarchar(String(v));
+      }
+      ap.endRow();
+    }
+    ap.closeSync();
+    const destino = path.join(pasta, 'achados.parquet');
+    await db.run(`COPY achados TO ${lit(`${destino}.part`)} (FORMAT PARQUET, COMPRESSION ZSTD)`);
+    await rm(destino, { force: true });
+    await rename(`${destino}.part`, destino);
+    return { destino, rows };
+  } finally {
+    db.closeSync();
+    instancia.closeSync();
+  }
+}
+
+// Contagens por cruzamento/sinal e as seções com maior pontuação (máximo entre os achados).
+export function resumir(rows, top = 10) {
+  const contagem = {};
+  const porSecao = new Map();
+  for (const r of rows) {
+    contagem[`${r.cruzamento}/${r.sinal}`] = (contagem[`${r.cruzamento}/${r.sinal}`] ?? 0) + 1;
+    const k = `${r.mun}/${r.zona}/${r.secao}`;
+    const s = porSecao.get(k) ?? { secao: k, max: 0, sinais: new Set(), explicacoes: new Set() };
+    s.max = Math.max(s.max, r.pontuacao);
+    s.sinais.add(`${r.sinal}@${r.pleito}(${r.pontuacao})`);
+    for (const e of String(r.explicacoesCandidatas || '').split(',').filter(Boolean)) s.explicacoes.add(e);
+    porSecao.set(k, s);
+  }
+  const ranking = [...porSecao.values()].sort((a, b) => b.max - a.max || b.sinais.size - a.sinais.size || a.secao.localeCompare(b.secao))
+    .slice(0, top).map((s) => ({ ...s, sinais: [...s.sinais], explicacoes: [...s.explicacoes] }));
+  return { contagem, ranking };
+}

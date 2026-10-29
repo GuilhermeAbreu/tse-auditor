@@ -9,12 +9,14 @@ import { buscarEleicoes } from './tse/eleicoes.js';
 import { ControleColeta } from './coleta/controle.js';
 import { criarPainel } from './painel/server.js';
 import { extrairUF } from './extracao/extrator.js';
+import { analisarUF, resumir } from './cruzamentos/index.js';
 
 const AJUDA = `uso:
   tse-auditor eleicoes
   tse-auditor coletar --pleito 3220,3221 [--uf ac,al] [--dados <pasta>] [--concorrencia 4]
   tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3000] [--sem-iniciar]
   tse-auditor extrair --uf ac [--pleito 3220,3221] [--dados <pasta>]   (BU/RDV/log -> parquet/<UF>/)
+  tse-auditor analisar --uf ac [--dados <pasta>]                       (cruzamentos -> parquet/<UF>/achados.parquet)
 
 O painel também configura pleitos, UFs e concorrência; a última configuração aplicada fica em
 $XDG_CONFIG_HOME/tse-auditor/config.json (ou TSE_CONFIG) e é usada quando o painel abre sem opções.`;
@@ -123,6 +125,19 @@ async function extrair(opcoes) {
   }
 }
 
+async function analisar(opcoes) {
+  if (!opcoes.uf) throw new Error('informe --uf');
+  const dados = opcoes.dados ?? pastaDados(PADRAO.hd, 'ele2026');
+  for (const uf of lista(opcoes.uf)) {
+    const inicio = Date.now();
+    const { destino, rows } = await analisarUF({ dados, uf });
+    const { contagem, ranking } = resumir(rows);
+    console.log(JSON.stringify({ uf, segundos: Math.round((Date.now() - inicio) / 1000), destino, achados: rows.length, contagem }, null, 2));
+    console.log('top 10 seções (mun/zona/secao, pontuação máxima, sinais, explicações candidatas):');
+    for (const s of ranking) console.log(`  ${s.secao}  ${s.max}  ${s.sinais.join(' ')}  [${s.explicacoes.join(',')}]`);
+  }
+}
+
 function inteiro(valor, nome, minimo = 1) {
   if (valor === undefined) return undefined;
   if (!/^\d+$/.test(valor) || Number(valor) < minimo) {
@@ -145,12 +160,13 @@ async function main(argv) {
     },
   });
   const [comando] = positionals;
-  if (!['eleicoes', 'coletar', 'painel', 'extrair'].includes(comando)) {
+  if (!['eleicoes', 'coletar', 'painel', 'extrair', 'analisar'].includes(comando)) {
     console.log(AJUDA);
     process.exitCode = 1;
     return;
   }
   if (comando === 'extrair') return extrair(opcoes);
+  if (comando === 'analisar') return analisar(opcoes);
   opcoes.concorrencia = inteiro(opcoes.concorrencia, '--concorrencia');
   opcoes.porta = inteiro(opcoes.porta, '--porta', 0); // 0: porta livre qualquer
   const http = new HttpClient({ concorrencia: PADRAO.concorrencia, userAgent: PADRAO.userAgent });
