@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { access, mkdir, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { HttpError } from '../net/http.js';
 import { lerConfigSecoes } from '../tse/configSecoes.js';
 import { lerIndiceSecao } from '../tse/indiceSecao.js';
 import { nomeConfigSecoes, nomeIndiceSecao } from '../tse/urls.js';
@@ -14,6 +15,24 @@ const JANELA_VELOCIDADE_MS = 60_000;
 const GB = 1024 ** 3;
 
 export class EspacoInsuficienteError extends Error {}
+export class SemConexaoError extends Error {}
+
+const HASH_VALIDO = /^[0-9a-f]+$/i;
+const NOME_VALIDO = /^[\w.-]+$/;
+
+// Devolve a descrição do problema do índice, ou null se estiver íntegro.
+function problemaNoIndice(indice) {
+  for (const { hash, arquivos } of indice.conjuntos) {
+    if (typeof hash !== 'string' || !HASH_VALIDO.test(hash)) return `hash inválido (${JSON.stringify(hash)})`;
+    if (arquivos.length === 0) return `conjunto ${hash} sem arquivos`;
+    for (const { nome } of arquivos) {
+      if (typeof nome !== 'string' || !NOME_VALIDO.test(nome) || nome === '.' || nome === '..') {
+        return `nome de arquivo inválido (${JSON.stringify(nome)})`;
+      }
+    }
+  }
+  return null;
+}
 
 async function gravarAtomico(caminho, conteudo) {
   await mkdir(path.dirname(caminho), { recursive: true });
@@ -55,13 +74,15 @@ export class Coletor extends EventEmitter {
   #planejado = false;
   #execucao = null;
   #amostras = [];
+  #tentadas = new Set();
+  #falhasRede = 0;
 
   constructor({
     manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes,
-    concorrencia = 4, bytesLivres = bytesLivresDoDisco, agora = Date.now,
+    concorrencia = 4, bytesLivres = bytesLivresDoDisco, agora = Date.now, limiteFalhasRede = 20,
   }) {
     super();
-    Object.assign(this, { manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes, concorrencia, bytesLivres, agora });
+    Object.assign(this, { manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes, concorrencia, bytesLivres, agora, limiteFalhasRede });
     this.estado = { rodando: false, ufAtual: null, municipioAtual: null, motivoParada: null };
   }
 
@@ -77,18 +98,35 @@ export class Coletor extends EventEmitter {
     return path.join(this.pastaDados, 'staging', uf.toUpperCase(), pleito, mun);
   }
 
+  // GET com disjuntor: falhas de rede (sem resposta HTTP) seguidas interrompem a coleta.
+  async #get(url) {
+    try {
+      const r = await this.http.get(url);
+      this.#falhasRede = 0;
+      return r;
+    } catch (err) {
+      if (err instanceof HttpError && err.status === undefined && ++this.#falhasRede >= this.limiteFalhasRede) {
+        throw new SemConexaoError(`sem conexão com o TSE: ${this.#falhasRede} falhas de rede seguidas; coleta interrompida`);
+      }
+      throw err;
+    }
+  }
+
   // Baixa a config de seções de cada UF × pleito, guarda o original em raw/ e registra as seções.
   async planejar() {
     this.manifest.registrarUfs(this.ufs);
     for (const uf of this.ufs) {
       for (const pleito of this.pleitos) {
         const url = this.urls.configSecoes({ ciclo: this.ciclo, pleito, uf });
-        const r = await this.http.get(url);
+        const r = await this.#get(url);
         if (r.status === 404) {
           this.manifest.registrarEvento('aviso', uf, `pleito ${pleito} sem configuração de seções para ${uf.toUpperCase()} (HTTP 404)`);
           continue;
         }
-        if (r.status !== 200) throw new Error(`configuração de seções ${uf.toUpperCase()}/${pleito}: HTTP ${r.status} (${url})`);
+        if (r.status !== 200) {
+          this.manifest.registrarEvento('aviso', uf, `pleito ${pleito}: configuração de seções de ${uf.toUpperCase()} ignorada (HTTP ${r.status})`);
+          continue;
+        }
         await gravarAtomico(path.join(this.#pastaRaw(uf), pleito, nomeConfigSecoes({ pleito, uf })), r.body);
         this.manifest.registrarConfig(pleito, uf, lerConfigSecoes(JSON.parse(r.body.toString('utf8'))).municipios);
       }
@@ -101,8 +139,9 @@ export class Coletor extends EventEmitter {
     const falhar = (erro) => this.manifest.finalizarSecao(s, { status: 'erro', erro });
     let r;
     try {
-      r = await this.http.get(this.urls.indiceSecao({ ciclo: this.ciclo, ...s }));
+      r = await this.#get(this.urls.indiceSecao({ ciclo: this.ciclo, ...s }));
     } catch (err) {
+      if (err instanceof SemConexaoError) throw err;
       return falhar(`índice: ${err.message}`);
     }
     if (r.status !== 200) return falhar(`índice: HTTP ${r.status}`);
@@ -112,20 +151,26 @@ export class Coletor extends EventEmitter {
     } catch (err) {
       return falhar(`índice ilegível: ${err.message}`);
     }
+    const problema = problemaNoIndice(indice);
+    if (problema) return falhar(`índice inválido: ${problema}`);
 
     const staging = this.#pastaStaging(s.pleito, s.uf, s.mun);
-    await gravarAtomico(path.join(staging, s.zona, s.secao, nomeIndiceSecao(s)), r.body);
+    const gravarIndice = () => gravarAtomico(path.join(staging, s.zona, s.secao, nomeIndiceSecao(s)), r.body);
     if (indice.conjuntos.length === 0) {
+      await gravarIndice();
       this.manifest.finalizarSecao(s, { status: 'sem_arquivos' });
       return;
     }
 
     this.manifest.registrarIndice(s, indice.conjuntos, (hash, nome) => this.urls.arquivo({ ciclo: this.ciclo, ...s }, hash, nome));
-    for (const { hash } of indice.conjuntos) await this.#baixarConjunto(s, hash, staging);
+    const ctx = { novos: 0 };
+    for (const { hash } of indice.conjuntos) await this.#baixarConjunto(s, hash, staging, ctx);
 
     const arquivos = this.manifest.arquivosDaSecao(s);
     const bytes = arquivos.reduce((total, a) => total + (a.bytes ?? 0), 0);
     const falha = arquivos.find((a) => a.status !== 'ok');
+    // O índice só vai para o staging quando há algo novo para o zip (evita reempacotar à toa).
+    if (!falha || ctx.novos > 0) await gravarIndice();
     this.manifest.finalizarSecao(s, falha
       ? { status: 'erro', bytes, erro: `${falha.nome}: ${falha.erro}` }
       : { status: 'completa', bytes });
@@ -133,7 +178,7 @@ export class Coletor extends EventEmitter {
 
   // Primeiro o .vsc (conferido contra o hash do diretório); depois os demais, conferidos pelo sha512 no .vsc.
   // O .vsc é baixado de novo sempre que o conjunto tem pendências, porque pode já estar só no zip.
-  async #baixarConjunto(s, hash, staging) {
+  async #baixarConjunto(s, hash, staging, ctx) {
     const registros = this.manifest.arquivosDaSecao(s).filter((a) => a.hash === hash);
     if (registros.every((a) => a.status === 'ok')) return;
     const pasta = path.join(staging, s.zona, s.secao, hash);
@@ -141,7 +186,7 @@ export class Coletor extends EventEmitter {
     const regVsc = registros.find((a) => a.nome.endsWith('.vsc'));
     let vsc = null;
     if (regVsc) {
-      vsc = await this.#baixarArquivo(s, regVsc, pasta, (buf) => (vscConfereComDiretorio(buf, hash)
+      vsc = await this.#baixarArquivo(s, regVsc, pasta, ctx, (buf) => (vscConfereComDiretorio(buf, hash)
         ? { verificacao: 'dir' }
         : { erro: 'sha256 do .vsc não confere com o hash do diretório' }));
     }
@@ -152,23 +197,24 @@ export class Coletor extends EventEmitter {
         this.manifest.marcarArquivo(s, reg.hash, reg.nome, { status: 'erro', erro: '.vsc inválido; arquivo não baixado' });
         continue;
       }
-      await this.#baixarArquivo(s, reg, pasta, (buf) => {
+      await this.#baixarArquivo(s, reg, pasta, ctx, (buf, { md5Verificado }) => {
         if (vsc && vscContemSha512(vsc, buf)) return { verificacao: 'vsc' };
         if (vsc && TIPOS_NO_VSC.has(reg.tipo)) return { erro: 'sha512 não consta no .vsc' };
-        return { verificacao: 'md5' };
+        return { verificacao: md5Verificado ? 'md5' : 'nenhuma' };
       });
     }
   }
 
   // Devolve o conteúdo verificado, ou null depois de registrar o erro.
   // Conteúdo que não confere é baixado de novo até TENTATIVAS_VERIFICACAO vezes.
-  async #baixarArquivo(s, reg, pasta, verificar) {
+  async #baixarArquivo(s, reg, pasta, ctx, verificar) {
     let erro;
     for (let tentativa = 1; tentativa <= TENTATIVAS_VERIFICACAO; tentativa++) {
       let r;
       try {
-        r = await this.http.get(reg.url);
+        r = await this.#get(reg.url);
       } catch (err) {
+        if (err instanceof SemConexaoError) throw err;
         erro = err.message;
         break;
       }
@@ -182,12 +228,16 @@ export class Coletor extends EventEmitter {
         erro = 'md5 não confere com o ETag';
         continue;
       }
-      const v = verificar(r.body);
+      const v = verificar(r.body, { md5Verificado: Boolean(md5Servidor) });
       if (v.erro) {
         erro = v.erro;
         continue;
       }
-      await gravarAtomico(path.join(pasta, reg.nome), r.body);
+      // Arquivo já ok no manifest só é rebaixado para servir de referência (.vsc); já está no zip.
+      if (reg.status !== 'ok') {
+        await gravarAtomico(path.join(pasta, reg.nome), r.body);
+        ctx.novos++;
+      }
       this.manifest.marcarArquivo(s, reg.hash, reg.nome, {
         status: 'ok', bytes: r.body.length, md5: md5Real, sha512: sha512Hex(r.body), verificacao: v.verificacao,
       });
@@ -238,12 +288,14 @@ export class Coletor extends EventEmitter {
 
   retomar(uf) {
     this.manifest.definirPausa(uf, false);
+    this.#tentadas.delete(uf);
     this.emit('mudou');
     return this.executar();
   }
 
   async #executar() {
     this.#parar = false;
+    this.#falhasRede = 0;
     Object.assign(this.estado, { rodando: true, motivoParada: null });
     this.emit('mudou');
     try {
@@ -252,10 +304,10 @@ export class Coletor extends EventEmitter {
         await this.planejar();
         this.#planejado = true;
       }
-      const tentadas = new Set();
+      this.#tentadas = new Set();
       let uf;
-      while (!this.#parar && (uf = this.#proximaUf(tentadas))) {
-        tentadas.add(uf);
+      while (!this.#parar && (uf = this.#proximaUf(this.#tentadas))) {
+        this.#tentadas.add(uf);
         await this.#coletarUf(uf);
       }
       this.estado.motivoParada = this.#parar ? 'parada solicitada' : 'concluída';
@@ -316,7 +368,8 @@ export class Coletor extends EventEmitter {
       await this.processarSecao(s);
     });
     if (interrompido) return; // o staging fica para a próxima execução; não empacota pela metade
-    if (municipio.empacotado_em && !(await existe(staging))) return; // nada novo para o zip
+    if (!(await existe(staging))) return; // nada novo para o zip
+    await this.#conferirStaging(pleito, uf, mun, staging);
     let bytes;
     try {
       ({ bytes } = await empacotarMunicipio({
@@ -334,12 +387,32 @@ export class Coletor extends EventEmitter {
     this.manifest.marcarEmpacotado(pleito, uf, mun, bytes);
   }
 
+  // Antes de empacotar: o que o manifest dá como ok e ainda está no staging tem de bater com o disco
+  // (uma gravação interrompida pode deixar arquivo truncado). Arquivos fora do staging já estão no zip.
+  async #conferirStaging(pleito, uf, mun, staging) {
+    for (const row of this.manifest.arquivosOkDoMunicipio(pleito, uf, mun)) {
+      const caminho = path.join(staging, row.zona, row.secao, row.hash, row.nome);
+      let conteudo;
+      try {
+        conteudo = await readFile(caminho);
+      } catch (err) {
+        if (err.code === 'ENOENT') continue;
+        throw err;
+      }
+      if (conteudo.length === row.bytes && sha512Hex(conteudo) === row.sha512) continue;
+      await rm(caminho, { force: true });
+      const secao = { pleito, uf, mun, zona: row.zona, secao: row.secao };
+      this.manifest.marcarArquivoInconsistente(secao, row.hash, row.nome, 'conteúdo no staging não confere com o manifest (gravação interrompida?)');
+      this.manifest.registrarEvento('aviso', uf, `${row.nome} (${pleito} ${mun} ${row.zona}/${row.secao}): conteúdo no staging não confere com o manifest; será baixado de novo`);
+    }
+  }
+
   async #garantirEspaco() {
     const livres = await this.bytesLivres(this.pastaDados);
     if (livres < this.minLivreBytes) {
       throw new EspacoInsuficienteError(
         `espaço livre abaixo do mínimo (${(livres / GB).toFixed(1)} GB livres, mínimo ${(this.minLivreBytes / GB).toFixed(0)} GB): ` +
-        'coleta pausada. Libere espaço e inicie de novo.',
+        'coleta interrompida. Libere espaço e inicie de novo.',
       );
     }
   }

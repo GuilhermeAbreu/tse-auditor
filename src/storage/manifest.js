@@ -96,6 +96,8 @@ export class Manifest {
                           WHERE pleito = ? AND uf = ? AND mun = ? AND status IN ('pendente', 'erro')
                           ORDER BY zona, secao`),
       secao: p(`SELECT * FROM secoes WHERE ${ONDE_SECAO}`),
+      arquivosOkDoMunicipio: p(`SELECT zona, secao, hash, nome, bytes, sha512 FROM arquivos
+                                WHERE pleito = ? AND uf = ? AND mun = ? AND status = 'ok'`),
       inserirConjunto: p(`INSERT OR IGNORE INTO conjuntos (pleito, uf, mun, zona, secao, hash, status, data, hora)
                           VALUES (@pleito, @uf, @mun, @zona, @secao, @hash, @status, @data, @hora)`),
       inserirArquivo: p(`INSERT OR IGNORE INTO arquivos (pleito, uf, mun, zona, secao, hash, nome, tipo, url)
@@ -257,6 +259,16 @@ export class Manifest {
     this.#abrirTransacao();
     this.#st.marcarArquivo.run({ ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
     this.#contar();
+  }
+
+  arquivosOkDoMunicipio(pleito, uf, mun) {
+    return this.#st.arquivosOkDoMunicipio.all(pleito, uf, mun);
+  }
+
+  // Arquivo que o manifest dava como ok mas cujo conteúdo no staging não confere.
+  marcarArquivoInconsistente(s, hash, nome, erro) {
+    this.marcarArquivo(s, hash, nome, { status: 'erro', erro });
+    this.finalizarSecao(s, { status: 'erro', erro: `${nome}: ${erro}` });
   }
 
   finalizarSecao(s, { status, bytes = 0, erro = null }) {

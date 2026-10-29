@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { access, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Coletor } from '../../src/coleta/coletor.js';
-import { HttpClient } from '../../src/net/http.js';
+import { Coletor, SemConexaoError } from '../../src/coleta/coletor.js';
+import { createHash } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { HttpClient, HttpError } from '../../src/net/http.js';
 import { Manifest } from '../../src/storage/manifest.js';
 import { buscarEleicoes } from '../../src/tse/eleicoes.js';
 import { criarUrls } from '../../src/tse/urls.js';
@@ -13,7 +15,7 @@ import { lerZip } from '../helpers/zip.js';
 
 const S77 = FX.secao('3220');
 
-async function montar(t, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados } = {}) {
+async function montar(t, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados, envolverHttp, limiteFalhasRede } = {}) {
   const fake = await iniciarFakeTse({ falhas });
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-coletor-'));
   const dados = subpastaDados ? path.join(dir, subpastaDados) : dir;
@@ -22,7 +24,8 @@ async function montar(t, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220',
   const manifest = new Manifest(path.join(dir, 'manifest.sqlite'));
   const coletor = new Coletor({
     manifest,
-    http,
+    http: envolverHttp ? envolverHttp(http) : http,
+    limiteFalhasRede,
     urls: criarUrls({ base: fake.base, ambiente: 'oficial', templates }),
     pastaDados: dados,
     ciclo: 'ele2026',
@@ -243,4 +246,124 @@ test('zip corrompido é posto de lado e refeito a partir do staging', async (t) 
   assert.equal((await lerZip(caminhoZip)).size, 6);
   assert.equal(manifest.secao(S77).status, 'completa');
   assert.ok(manifest.eventos(20).some((e) => e.nivel === 'aviso' && /zip corrompido/.test(e.msg)));
+});
+
+// http falso: responde `resposta(url)` quando ela devolve algo; senão delega ao cliente real.
+const interceptar = (resposta) => (real) => ({ get: async (url) => (await resposta(url)) ?? real.get(url) });
+
+test('staging que não confere com o manifest é descartado e refeito', async (t) => {
+  const { dados, manifest, coletor } = await montar(t);
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  const bu = path.join(dados, 'staging/AC/3220/01066/0004/0077', FX.hash3220, nomeArquivo('3220', 'bu.dat'));
+  const original = await readFile(bu);
+  await writeFile(bu, Buffer.alloc(original.length));
+
+  await coletor.executar();
+  assert.ok(manifest.eventos(50).some((e) => e.nivel === 'aviso' && /não confere/.test(e.msg)));
+  assert.equal(manifest.secao(S77).status, 'erro');
+
+  await coletor.executar();
+  assert.equal(manifest.secao(S77).status, 'completa');
+  const zip = await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'));
+  assert.deepEqual(zip.get(`0004/0077/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`).dados, original);
+});
+
+test('índice com hash ou nome de arquivo inválido marca a seção com erro', async (t) => {
+  const ruins = [
+    { hashes: [{ hash: '../x', arq: [{ nm: 'a.dat', tp: 'bu' }] }] },
+    { hashes: [{ hash: 'abc123', arq: [{ nm: '../a.dat', tp: 'bu' }] }] },
+    { hashes: [{ hash: 'abc123', arq: [] }] },
+  ];
+  for (const indice of ruins) {
+    const { manifest, coletor } = await montar(t, {
+      envolverHttp: interceptar((url) => (url.endsWith('s0077-aux.json')
+        ? { status: 200, body: Buffer.from(JSON.stringify(indice)), etag: null } : null)),
+    });
+    await coletor.planejar();
+    await coletor.processarSecao(S77);
+    assert.equal(manifest.secao(S77).status, 'erro');
+    assert.match(manifest.secao(S77).erro, /^índice inválido: /);
+  }
+});
+
+test('UF retomada durante a execução é coletada na mesma execução', async (t) => {
+  let primeira = true;
+  const { dados, coletor } = await montar(t, {
+    ufs: ['ac', 'zz'],
+    bytesLivres: async () => {
+      if (primeira) {
+        primeira = false;
+        coletor.pausar('ac');
+      }
+      return 10 ** 12;
+    },
+  });
+  let retomou = false;
+  coletor.on('mudou', () => {
+    if (!retomou && coletor.estado.ufAtual === 'zz') {
+      retomou = true;
+      coletor.retomar('ac');
+    }
+  });
+  await coletor.executar();
+  assert.ok(retomou);
+  assert.equal(coletor.estado.motivoParada, 'concluída');
+  assert.equal((await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'))).size, 6);
+});
+
+test('verificação "nenhuma" quando não há ETag nem .vsc', async (t) => {
+  const corpo = { com: Buffer.from('com etag'), sem: Buffer.from('sem etag') };
+  const indice = { st: 'x', hashes: [{ hash: 'abc123', arq: [{ nm: 'a.dat', tp: 'xx' }, { nm: 'b.dat', tp: 'xx' }] }] };
+  const { manifest, coletor } = await montar(t, {
+    envolverHttp: interceptar((url) => {
+      if (url.endsWith('s0077-aux.json')) return { status: 200, body: Buffer.from(JSON.stringify(indice)), etag: null };
+      if (url.endsWith('/a.dat')) return { status: 200, body: corpo.com, etag: `"${createHash('md5').update(corpo.com).digest('hex')}"` };
+      if (url.endsWith('/b.dat')) return { status: 200, body: corpo.sem, etag: null };
+      return null;
+    }),
+  });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  const por = Object.fromEntries(manifest.arquivosDaSecao(S77).map((a) => [a.nome, a.verificacao]));
+  assert.deepEqual(por, { 'a.dat': 'md5', 'b.dat': 'nenhuma' });
+  assert.equal(manifest.secao(S77).status, 'completa');
+});
+
+test('segunda execução não reempacota quando nada novo foi baixado', async (t) => {
+  const bu = nomeArquivo('3220', 'bu.dat');
+  const { dados, coletor } = await montar(t, { falhas: { [bu]: Array(6).fill('corromper') } });
+  const zip = path.join(dados, 'raw/AC/3220/01066.zip');
+  await coletor.executar();
+  const antes = await stat(zip);
+  await new Promise((r) => setTimeout(r, 20));
+  await coletor.executar();
+  const depois = await stat(zip);
+  assert.equal(depois.mtimeMs, antes.mtimeMs);
+  assert.equal(depois.size, antes.size);
+  await assert.rejects(access(path.join(dados, 'staging/AC/3220/01066')));
+});
+
+test('falhas de rede seguidas interrompem a coleta', async (t) => {
+  const { coletor, manifest } = await montar(t, {
+    limiteFalhasRede: 3,
+    envolverHttp: interceptar((url) => {
+      if (url.includes('/dados/')) throw new HttpError('falha de rede: ECONNREFUSED', { url });
+      return null;
+    }),
+  });
+  await coletor.executar();
+  assert.match(coletor.estado.motivoParada, /^sem conexão com o TSE: 3 falhas de rede seguidas; coleta interrompida$/);
+  assert.equal(manifest.eventos(1)[0].nivel, 'erro');
+  assert.ok(new SemConexaoError('x') instanceof Error);
+});
+
+test('planejar ignora UF com status inesperado em vez de abortar', async (t) => {
+  const { manifest, coletor } = await montar(t, {
+    envolverHttp: interceptar((url) => (url.includes('/config/') && url.includes('-p003221-')
+      ? { status: 403, body: Buffer.alloc(0), etag: null } : null)),
+  });
+  await coletor.planejar();
+  assert.ok(manifest.eventos(5).some((e) => e.nivel === 'aviso' && /HTTP 403/.test(e.msg)));
+  assert.equal(manifest.secoesPendentes('3220', 'ac', '01066').length, 3);
 });
