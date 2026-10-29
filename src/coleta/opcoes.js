@@ -33,6 +33,7 @@ export function padroes({ hd = PADRAO.hd } = {}) {
     minLivreGB: PADRAO.minLivreGB,
     intervaloCommitMs: PADRAO.intervaloCommitMs,
     intervaloPainelMs: PADRAO.intervaloPainelMs,
+    analisarAoConcluir: true, // extrair + analisar a UF quando a coleta dela termina (painel)
     hd,
   };
 }
@@ -89,6 +90,9 @@ export function normalizarOpcoes(entrada = {}, base = padroes()) {
   for (const campo of ['concorrencia', 'tentativasVerificacao', 'limiteFalhasRede', 'minLivreGB', 'intervaloCommitMs', 'intervaloPainelMs']) {
     opcoes[campo] = inteiroNaFaixa(de(e[campo], base[campo]), campo);
   }
+  const analisar = de(e.analisarAoConcluir, base.analisarAoConcluir ?? true);
+  if (typeof analisar !== 'boolean') throw new Error('analisarAoConcluir precisa ser verdadeiro ou falso');
+  opcoes.analisarAoConcluir = analisar;
   opcoes.hd = path.normalize(hd.trim());
   return opcoes;
 }

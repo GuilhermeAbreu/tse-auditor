@@ -55,3 +55,14 @@ dl.leitura dd { margin: 0; color: var(--suave); }
   label.campo, dl.leitura { grid-template-columns: 1fr; }
   label.campo .dica { grid-column: 1; }
 }
+#an-ranking tbody tr { cursor: pointer; }
+#an-ranking tbody tr:hover, #an-ranking tbody tr.sel { background: color-mix(in srgb, var(--ativo) 12%, transparent); }
+#an-secao { background: var(--cartao); border: 1px solid var(--borda); border-radius: 8px; padding: 12px; margin-top: 16px; }
+.turnos { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.turnos dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
+.turnos dd { margin: 0; font-variant-numeric: tabular-nums; }
+.sinal { display: inline-block; border: 1px solid var(--borda); border-radius: 10px; padding: 0 6px; margin: 1px; font-size: 12px; }
+svg.tempo { width: 100%; height: auto; max-width: 900px; display: block; }
+svg.tempo text { fill: var(--suave); font-size: 10px; }
+.legenda span { margin-right: 12px; font-size: 12px; }
+.legenda i { display: inline-block; width: 10px; height: 10px; margin-right: 4px; vertical-align: middle; }

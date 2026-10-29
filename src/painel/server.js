@@ -1,5 +1,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { detalharSecao, FilaAnalise, listarUfs, ranking, turnosPelasEleicoes } from './analise.js';
+import { UFS } from '../ufs.js';
 
 const PUBLICO = new URL('./public/', import.meta.url);
 const ESTATICOS = {
@@ -91,8 +93,19 @@ async function aplicarConfig(req, res, controle) {
 
 // Painel local: página estática, estado em JSON, estado ao vivo por SSE, configuração e controles da coleta.
 // Só aceita Host/Origin locais e POST com cabeçalho próprio (defesa contra CSRF e DNS rebinding).
-export function criarPainel({ controle }) {
+export function criarPainel({ controle, fila = new FilaAnalise({ turnosDe: turnosPelasEleicoes(controle.eleicoes) }) }) {
   const obterEstado = () => controle.obterEstado();
+  const dados = () => controle.configuracao()?.dados ?? null;
+  // automação: UF cuja coleta termina nesta execução entra na fila de análise (analisarAoConcluir)
+  const vigia = setInterval(async () => {
+    try {
+      const cfg = controle.configuracao();
+      if (cfg) fila.observar(await obterEstado(), cfg.dados, cfg.analisarAoConcluir !== false);
+    } catch {
+      // estado indisponível: tenta na próxima
+    }
+  }, 15_000);
+  vigia.unref();
   const intervaloMs = () => controle.intervaloPainelMs();
   const servidor = http.createServer(async (req, res) => {
     try {
@@ -129,6 +142,7 @@ export function criarPainel({ controle }) {
         else coletor.retomar(daUf[1]); // despausa e inicia a execução se estiver parada
         return json(res, 200, { ok: true });
       }
+      if (pathname.startsWith('/api/analise/')) return analise(req, res, pathname, new URL(req.url, 'http://localhost').searchParams);
       json(res, 404, { erro: 'não encontrado' });
     } catch (err) {
       try {
@@ -139,5 +153,24 @@ export function criarPainel({ controle }) {
       }
     }
   });
+  servidor.on('close', () => clearInterval(vigia));
+  servidor.fila = fila;
+
+  async function analise(req, res, pathname, q) {
+    if (req.method === 'GET' && pathname === '/api/analise/jobs') return json(res, 200, fila.listar());
+    const pasta = dados();
+    if (!pasta) return json(res, 409, { erro: 'sem configuração' });
+    if (req.method === 'GET' && pathname === '/api/analise/ufs') return json(res, 200, { ufs: await listarUfs(pasta) });
+    const m = /^\/api\/analise\/([a-z]{2})\/(ranking|executar|secao\/(\d{1,6})\/(\d{1,6})\/(\d{1,6}))$/.exec(pathname);
+    if (!m || !UFS.includes(m[1])) return json(res, 404, { erro: 'não encontrado' });
+    const [, uf, acao, mun, zona, secao] = m;
+    if (req.method === 'POST' && acao === 'executar') return json(res, 202, { ok: true, job: fila.enfileirar(uf, pasta) });
+    if (req.method !== 'GET') return json(res, 405, { erro: 'método não permitido' });
+    if (acao === 'ranking') {
+      return json(res, 200, await ranking(pasta, uf, { sinal: q.get('sinal') ?? '', limite: q.get('limite') ?? 200 }));
+    }
+    if (acao === 'executar') return json(res, 405, { erro: 'use POST' });
+    return json(res, 200, await detalharSecao(pasta, uf, { mun, zona, secao }));
+  }
   return servidor;
 }
