@@ -1,0 +1,16 @@
+{
+  "name": "tse-auditor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12" },
+  "bin": { "tse-auditor": "src/cli.js" },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1"
+  }
+}
