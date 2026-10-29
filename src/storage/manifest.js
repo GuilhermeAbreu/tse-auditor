@@ -96,6 +96,7 @@ export class Manifest {
                           WHERE pleito = ? AND uf = ? AND mun = ? AND status IN ('pendente', 'erro')
                           ORDER BY zona, secao`),
       secao: p(`SELECT * FROM secoes WHERE ${ONDE_SECAO}`),
+      arquivo: p(`SELECT * FROM arquivos WHERE ${ONDE_SECAO} AND hash = @hash AND nome = @nome`),
       arquivosOkDoMunicipio: p(`SELECT zona, secao, hash, nome, bytes, sha512 FROM arquivos
                                 WHERE pleito = ? AND uf = ? AND mun = ? AND status = 'ok'`),
       inserirConjunto: p(`INSERT OR IGNORE INTO conjuntos (pleito, uf, mun, zona, secao, hash, status, data, hora)
@@ -259,6 +260,10 @@ export class Manifest {
     this.#abrirTransacao();
     this.#st.marcarArquivo.run({ ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
     this.#contar();
+  }
+
+  arquivo(s, hash, nome) {
+    return this.#st.arquivo.get({ ...chave(s), hash, nome });
   }
 
   arquivosOkDoMunicipio(pleito, uf, mun) {

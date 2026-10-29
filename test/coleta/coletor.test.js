@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Coletor, SemConexaoError } from '../../src/coleta/coletor.js';
@@ -366,4 +366,39 @@ test('planejar ignora UF com status inesperado em vez de abortar', async (t) => 
   await coletor.planejar();
   assert.ok(manifest.eventos(5).some((e) => e.nivel === 'aviso' && /HTTP 403/.test(e.msg)));
   assert.equal(manifest.secoesPendentes('3220', 'ac', '01066').length, 3);
+});
+
+test('arquivo no staging sem registro ok e índice truncado não entram no zip', async (t) => {
+  const bu = nomeArquivo('3220', 'bu.dat');
+  const { dados, manifest, coletor } = await montar(t, { falhas: { [bu]: Array(6).fill('corromper') } });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  assert.equal(manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'bu').status, 'erro');
+  const pasta = path.join(dados, 'staging/AC/3220/01066/0004/0077');
+  await writeFile(path.join(pasta, FX.hash3220, bu), Buffer.from('falso'));
+  await writeFile(path.join(pasta, 'p003220-ac-m01066-z0004-s0077-aux.json'), Buffer.from('{"hashes": ['));
+
+  await coletor.executar();
+  const zip = await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'));
+  assert.ok(!zip.has(`0004/0077/${FX.hash3220}/${bu}`));
+  assert.ok(!zip.has('0004/0077/p003220-ac-m01066-z0004-s0077-aux.json'));
+});
+
+test('arquivo ok ausente do staging e do zip é rebaixado', async (t) => {
+  const { dados, manifest, coletor } = await montar(t);
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  const bu = nomeArquivo('3220', 'bu.dat');
+  const caminho = path.join(dados, 'staging/AC/3220/01066/0004/0077', FX.hash3220, bu);
+  const original = await readFile(caminho);
+  await rm(caminho);
+
+  await coletor.executar();
+  assert.ok(manifest.eventos(50).some((e) => e.nivel === 'aviso' && /ausente/.test(e.msg)));
+  assert.equal(manifest.secao(S77).status, 'erro');
+
+  await coletor.executar();
+  assert.equal(manifest.secao(S77).status, 'completa');
+  const zip = await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'));
+  assert.deepEqual(zip.get(`0004/0077/${FX.hash3220}/${bu}`).dados, original);
 });

@@ -56,6 +56,20 @@ async function lerEntradas(caminhoZip) {
   return { zip, entradas };
 }
 
+// Nomes das entradas de um zip (só o diretório central). Zip ausente ou ilegível dá conjunto vazio;
+// o caso ilegível é tratado por empacotarMunicipio (ZipCorrompidoError).
+export async function listarNomesZip(caminhoZip) {
+  let lido;
+  try {
+    lido = await lerEntradas(caminhoZip);
+  } catch (err) {
+    if (err.code === 'ENOENT' || ehErroDeFormatoZip(err)) return new Set();
+    throw err;
+  }
+  lido.zip.close();
+  return new Set(lido.entradas.map((e) => e.fileName));
+}
+
 async function conferirZip(caminho, esperado) {
   const { zip, entradas } = await lerEntradas(caminho);
   zip.close();

@@ -1,12 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { HttpError } from '../net/http.js';
 import { lerConfigSecoes } from '../tse/configSecoes.js';
 import { lerIndiceSecao } from '../tse/indiceSecao.js';
 import { nomeConfigSecoes, nomeIndiceSecao } from '../tse/urls.js';
 import { md5, md5DoEtag, sha512Hex, vscConfereComDiretorio, vscContemSha512 } from '../tse/integridade.js';
-import { empacotarMunicipio, ZipCorrompidoError } from '../storage/empacotar.js';
+import { empacotarMunicipio, listarNomesZip, ZipCorrompidoError } from '../storage/empacotar.js';
 import { bytesLivres as bytesLivresDoDisco, ehErroDeVolume, garantirVolume } from '../storage/disco.js';
 
 const TIPOS_NO_VSC = new Set(['bu', 'rdv', 'log']);
@@ -368,8 +368,11 @@ export class Coletor extends EventEmitter {
       await this.processarSecao(s);
     });
     if (interrompido) return; // o staging fica para a próxima execução; não empacota pela metade
-    if (!(await existe(staging))) return; // nada novo para o zip
-    await this.#conferirStaging(pleito, uf, mun, staging);
+    const noStaging = await this.#conferirStaging(pleito, uf, mun, staging);
+    if (noStaging === 0) { // nada novo para o zip
+      await rm(staging, { recursive: true, force: true });
+      return;
+    }
     let bytes;
     try {
       ({ bytes } = await empacotarMunicipio({
@@ -387,24 +390,64 @@ export class Coletor extends EventEmitter {
     this.manifest.marcarEmpacotado(pleito, uf, mun, bytes);
   }
 
-  // Antes de empacotar: o que o manifest dá como ok e ainda está no staging tem de bater com o disco
-  // (uma gravação interrompida pode deixar arquivo truncado). Arquivos fora do staging já estão no zip.
+  // Antes de empacotar, confere o staging com o manifest e o manifest com staging + zip.
+  // Percorre a listagem do staging: só fica o que o manifest dá como ok e cujo conteúdo confere
+  // (gravação interrompida deixa arquivo truncado; sobra de execução antiga não pode entrar no zip).
+  // Seções afetadas ficam em 'erro' e são retentadas na próxima execução. Devolve quantos arquivos ficaram no staging.
   async #conferirStaging(pleito, uf, mun, staging) {
-    for (const row of this.manifest.arquivosOkDoMunicipio(pleito, uf, mun)) {
-      const caminho = path.join(staging, row.zona, row.secao, row.hash, row.nome);
-      let conteudo;
-      try {
-        conteudo = await readFile(caminho);
-      } catch (err) {
-        if (err.code === 'ENOENT') continue;
-        throw err;
-      }
-      if (conteudo.length === row.bytes && sha512Hex(conteudo) === row.sha512) continue;
-      await rm(caminho, { force: true });
-      const secao = { pleito, uf, mun, zona: row.zona, secao: row.secao };
-      this.manifest.marcarArquivoInconsistente(secao, row.hash, row.nome, 'conteúdo no staging não confere com o manifest (gravação interrompida?)');
-      this.manifest.registrarEvento('aviso', uf, `${row.nome} (${pleito} ${mun} ${row.zona}/${row.secao}): conteúdo no staging não confere com o manifest; será baixado de novo`);
+    const aviso = (msg) => this.manifest.registrarEvento('aviso', uf, `${pleito} ${mun}: ${msg}`);
+    const noStaging = new Set();
+    let itens = [];
+    try {
+      itens = await readdir(staging, { recursive: true, withFileTypes: true });
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
     }
+    for (const d of itens) {
+      if (!d.isFile()) continue;
+      const caminho = path.join(d.parentPath, d.name);
+      const rel = path.relative(staging, caminho).split(path.sep);
+      if (d.name.endsWith('.part')) {
+        await rm(caminho, { force: true });
+        continue;
+      }
+      const [zona, secao, hash] = rel;
+      const s = { pleito, uf, mun, zona, secao };
+      if (rel.length === 3 && d.name.endsWith('-aux.json')) {
+        try {
+          lerIndiceSecao(JSON.parse((await readFile(caminho)).toString('utf8')));
+          noStaging.add(rel.join('/'));
+        } catch {
+          await rm(caminho, { force: true });
+          this.manifest.finalizarSecao(s, { status: 'erro', erro: 'índice no staging ilegível' });
+          aviso(`${d.name}: índice no staging ilegível; será baixado de novo`);
+        }
+        continue;
+      }
+      const reg = rel.length === 4 ? this.manifest.arquivo(s, hash, d.name) : undefined;
+      if (reg?.status === 'ok') {
+        const conteudo = await readFile(caminho);
+        if (conteudo.length === reg.bytes && sha512Hex(conteudo) === reg.sha512) {
+          noStaging.add(rel.join('/'));
+          continue;
+        }
+        await rm(caminho, { force: true });
+        this.manifest.marcarArquivoInconsistente(s, hash, d.name, 'conteúdo no staging não confere com o manifest (gravação interrompida?)');
+        aviso(`${d.name} (${zona}/${secao}): conteúdo no staging não confere com o manifest; será baixado de novo`);
+      } else {
+        await rm(caminho, { force: true }); // sem registro ok: não entra no zip; será baixado de novo
+      }
+    }
+
+    const noZip = await listarNomesZip(this.#caminhoZip(pleito, uf, mun));
+    for (const r of this.manifest.arquivosOkDoMunicipio(pleito, uf, mun)) {
+      const nome = `${r.zona}/${r.secao}/${r.hash}/${r.nome}`;
+      if (noStaging.has(nome) || noZip.has(nome)) continue;
+      const s = { pleito, uf, mun, zona: r.zona, secao: r.secao };
+      this.manifest.marcarArquivoInconsistente(s, r.hash, r.nome, 'arquivo ausente do staging e do zip');
+      aviso(`${r.nome} (${r.zona}/${r.secao}): arquivo ausente do staging e do zip; será baixado de novo`);
+    }
+    return noStaging.size;
   }
 
   async #garantirEspaco() {
