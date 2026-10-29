@@ -217,4 +217,122 @@ export class Coletor extends EventEmitter {
   aguardar() {
     return this.#execucao ?? Promise.resolve();
   }
+
+  // Uma execução por vez: chamar de novo enquanto roda devolve a mesma promessa.
+  // Nunca rejeita: o motivo da parada fica em estado.motivoParada e nos eventos do manifest.
+  executar() {
+    this.#execucao ??= this.#executar().finally(() => {
+      this.#execucao = null;
+    });
+    return this.#execucao;
+  }
+
+  parar() {
+    this.#parar = true;
+  }
+
+  pausar(uf) {
+    this.manifest.definirPausa(uf, true);
+    this.emit('mudou');
+  }
+
+  retomar(uf) {
+    this.manifest.definirPausa(uf, false);
+    this.emit('mudou');
+    return this.executar();
+  }
+
+  async #executar() {
+    this.#parar = false;
+    Object.assign(this.estado, { rodando: true, motivoParada: null });
+    this.emit('mudou');
+    try {
+      await garantirVolume(this.pastaDados);
+      if (!this.#planejado) {
+        await this.planejar();
+        this.#planejado = true;
+      }
+      const tentadas = new Set();
+      let uf;
+      while (!this.#parar && (uf = this.#proximaUf(tentadas))) {
+        tentadas.add(uf);
+        await this.#coletarUf(uf);
+      }
+      this.estado.motivoParada = this.#parar ? 'parada solicitada' : 'concluída';
+      this.manifest.registrarEvento('info', null, `coleta ${this.estado.motivoParada}`);
+    } catch (err) {
+      const volume = ehErroDeVolume(err) || !(await existe(this.pastaDados));
+      this.estado.motivoParada = volume ? `HD inacessível: ${err.message}` : err.message;
+      try {
+        this.manifest.registrarEvento('erro', this.estado.ufAtual, this.estado.motivoParada);
+      } catch {
+        // o manifest está no mesmo HD; se ele sumiu, não há onde registrar
+      }
+    } finally {
+      try {
+        this.manifest.descarregar();
+      } catch {
+        // falha de commit fica em manifest.erro
+      }
+      Object.assign(this.estado, { rodando: false, ufAtual: null, municipioAtual: null });
+      this.emit('mudou');
+    }
+  }
+
+  // Próxima UF, na ordem de coleta, que não está pausada e ainda não foi tentada nesta execução.
+  // Uma UF despausada no meio da execução entra na fila.
+  #proximaUf(tentadas) {
+    return this.manifest.ufs().find((u) => this.ufs.includes(u.uf) && !u.pausada && !tentadas.has(u.uf))?.uf;
+  }
+
+  #deveParar(uf) {
+    return this.#parar || this.manifest.ufPausada(uf);
+  }
+
+  // Município por município, os dois turnos juntos.
+  async #coletarUf(uf) {
+    this.estado.ufAtual = uf;
+    this.emit('mudou');
+    for (const { mun } of this.manifest.municipiosDaUf(uf)) {
+      for (const pleito of this.pleitos) {
+        if (this.#deveParar(uf)) return;
+        await this.#coletarMunicipio(pleito, uf, mun);
+      }
+    }
+  }
+
+  async #coletarMunicipio(pleito, uf, mun) {
+    const municipio = this.manifest.municipio(pleito, uf, mun);
+    if (!municipio) return;
+    this.estado.municipioAtual = `${mun} ${municipio.nome}`;
+    const staging = this.#pastaStaging(pleito, uf, mun);
+    let interrompido = false;
+    await emParalelo(this.manifest.secoesPendentes(pleito, uf, mun), this.concorrencia * 2, async (s) => {
+      if (this.#deveParar(uf)) {
+        interrompido = true;
+        return;
+      }
+      await this.#garantirEspaco();
+      await this.processarSecao(s);
+    });
+    if (interrompido) return; // o staging fica para a próxima execução; não empacota pela metade
+    if (municipio.empacotado_em && !(await existe(staging))) return; // nada novo para o zip
+    const { bytes } = await empacotarMunicipio({
+      pastaStaging: staging,
+      caminhoZip: this.#caminhoZip(pleito, uf, mun),
+      bytesLivres: this.bytesLivres,
+      minLivreBytes: this.minLivreBytes,
+    });
+    this.manifest.marcarEmpacotado(pleito, uf, mun, bytes);
+  }
+
+  async #garantirEspaco() {
+    const livres = await this.bytesLivres(this.pastaDados);
+    if (livres < this.minLivreBytes) {
+      throw new EspacoInsuficienteError(
+        `espaço livre abaixo do mínimo (${(livres / GB).toFixed(1)} GB livres, mínimo ${(this.minLivreBytes / GB).toFixed(0)} GB): ` +
+        'coleta pausada. Libere espaço e inicie de novo.',
+      );
+    }
+  }
 }
