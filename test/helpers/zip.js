@@ -7,6 +7,7 @@ export async function lerZip(caminho) {
   const zip = await promisify(yauzl.open)(caminho, { lazyEntries: true, autoClose: false });
   const abrir = promisify(zip.openReadStream.bind(zip));
   const conteudo = new Map();
+  try {
   await new Promise((ok, falha) => {
     zip.on('entry', async (e) => {
       try {
@@ -20,6 +21,8 @@ export async function lerZip(caminho) {
     zip.on('error', falha);
     zip.readEntry();
   });
-  zip.close();
+  } finally {
+    zip.close();
+  }
   return conteudo;
 }

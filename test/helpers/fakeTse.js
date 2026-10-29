@@ -27,6 +27,7 @@ export async function iniciarFakeTse({ falhas = {} } = {}) {
   const pendentes = Object.fromEntries(Object.entries(falhas).map(([k, v]) => [k, [...v]]));
   const requisicoes = [];
   const servidor = http.createServer(async (req, res) => {
+    try {
     const caminho = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     requisicoes.push(caminho);
     const chave = Object.keys(pendentes).find((k) => caminho.endsWith(k) && pendentes[k].length > 0);
@@ -38,7 +39,9 @@ export async function iniciarFakeTse({ falhas = {} } = {}) {
     }
     let corpo;
     try {
-      corpo = await readFile(path.join(RAIZ_FIXTURES, caminho));
+      const alvo = path.resolve(RAIZ_FIXTURES, `.${caminho}`);
+      if (!alvo.startsWith(RAIZ_FIXTURES + path.sep)) throw new Error('fora da raiz');
+      corpo = await readFile(alvo);
     } catch {
       res.writeHead(404);
       res.end('NoSuchKey');
@@ -52,6 +55,10 @@ export async function iniciarFakeTse({ falhas = {} } = {}) {
     }
     res.writeHead(200, { etag: `"${etag}"`, 'content-length': corpo.length });
     res.end(corpo);
+    } catch {
+      if (!res.headersSent) res.writeHead(400);
+      res.end();
+    }
   });
   await new Promise((r) => servidor.listen(0, '127.0.0.1', r));
   return {
