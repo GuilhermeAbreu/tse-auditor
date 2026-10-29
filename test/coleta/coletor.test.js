@@ -15,7 +15,7 @@ import { lerZip } from '../helpers/zip.js';
 
 const S77 = FX.secao('3220');
 
-async function montar(t, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados, envolverHttp, limiteFalhasRede } = {}) {
+async function montar(t, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados, envolverHttp, limiteFalhasRede, tentativasVerificacao } = {}) {
   const fake = await iniciarFakeTse({ falhas });
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-coletor-'));
   const dados = subpastaDados ? path.join(dir, subpastaDados) : dir;
@@ -26,6 +26,7 @@ async function montar(t, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220',
     manifest,
     http: envolverHttp ? envolverHttp(http) : http,
     limiteFalhasRede,
+    tentativasVerificacao,
     urls: criarUrls({ base: fake.base, ambiente: 'oficial', templates }),
     pastaDados: dados,
     ciclo: 'ele2026',
@@ -110,6 +111,15 @@ test('arquivo corrompido em trânsito é baixado de novo', async (t) => {
   await coletor.processarSecao(S77);
   assert.equal(manifest.secao(S77).status, 'completa');
   assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 2);
+});
+
+test('tentativasVerificacao = 1 não baixa de novo o arquivo corrompido', async (t) => {
+  const falhas = { [nomeArquivo('3220', 'bu.dat')]: ['corromper'] };
+  const { fake, manifest, coletor } = await montar(t, { falhas, tentativasVerificacao: 1 });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 1);
+  assert.equal(manifest.secao(S77).status, 'erro');
 });
 
 test('corrupção persistente marca o arquivo e a seção com erro', async (t) => {

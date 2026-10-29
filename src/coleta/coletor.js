@@ -10,7 +10,6 @@ import { empacotarMunicipio, listarNomesZip, ZipCorrompidoError } from '../stora
 import { bytesLivres as bytesLivresDoDisco, ehErroDeVolume, garantirVolume } from '../storage/disco.js';
 
 const TIPOS_NO_VSC = new Set(['bu', 'rdv', 'log']);
-const TENTATIVAS_VERIFICACAO = 3;
 const JANELA_VELOCIDADE_MS = 60_000;
 const GB = 1024 ** 3;
 
@@ -79,10 +78,10 @@ export class Coletor extends EventEmitter {
 
   constructor({
     manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes,
-    concorrencia = 4, bytesLivres = bytesLivresDoDisco, agora = Date.now, limiteFalhasRede = 20,
+    concorrencia = 4, bytesLivres = bytesLivresDoDisco, agora = Date.now, limiteFalhasRede = 20, tentativasVerificacao = 3,
   }) {
     super();
-    Object.assign(this, { manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes, concorrencia, bytesLivres, agora, limiteFalhasRede });
+    Object.assign(this, { manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes, concorrencia, bytesLivres, agora, limiteFalhasRede, tentativasVerificacao });
     this.estado = { rodando: false, ufAtual: null, municipioAtual: null, motivoParada: null };
   }
 
@@ -206,10 +205,10 @@ export class Coletor extends EventEmitter {
   }
 
   // Devolve o conteúdo verificado, ou null depois de registrar o erro.
-  // Conteúdo que não confere é baixado de novo até TENTATIVAS_VERIFICACAO vezes.
+  // Conteúdo que não confere é baixado de novo até `tentativasVerificacao` vezes.
   async #baixarArquivo(s, reg, pasta, ctx, verificar) {
     let erro;
-    for (let tentativa = 1; tentativa <= TENTATIVAS_VERIFICACAO; tentativa++) {
+    for (let tentativa = 1; tentativa <= this.tentativasVerificacao; tentativa++) {
       let r;
       try {
         r = await this.#get(reg.url);
