@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import { PADRAO } from './config.js';
+import { PADRAO, pastaDados } from './config.js';
 import { configInicial, lerConfigSalva } from './configSalva.js';
 import { UFS } from './ufs.js';
 import { fmtBytes, linhaDeProgresso } from './formatar.js';
@@ -8,11 +8,13 @@ import { HttpClient } from './net/http.js';
 import { buscarEleicoes } from './tse/eleicoes.js';
 import { ControleColeta } from './coleta/controle.js';
 import { criarPainel } from './painel/server.js';
+import { extrairUF } from './extracao/extrator.js';
 
 const AJUDA = `uso:
   tse-auditor eleicoes
   tse-auditor coletar --pleito 3220,3221 [--uf ac,al] [--dados <pasta>] [--concorrencia 4]
   tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3000] [--sem-iniciar]
+  tse-auditor extrair --uf ac [--pleito 3220,3221] [--dados <pasta>]   (BU/RDV/log -> parquet/<UF>/)
 
 O painel também configura pleitos, UFs e concorrência; a última configuração aplicada fica em
 $XDG_CONFIG_HOME/tse-auditor/config.json (ou TSE_CONFIG) e é usada quando o painel abre sem opções.`;
@@ -107,6 +109,20 @@ async function painel(controle, opcoes) {
   });
 }
 
+async function extrair(opcoes) {
+  if (!opcoes.uf) throw new Error('informe --uf');
+  const dados = opcoes.dados ?? pastaDados(PADRAO.hd, 'ele2026');
+  for (const uf of lista(opcoes.uf)) {
+    const inicio = Date.now();
+    const stats = await extrairUF({
+      dados, uf, pleitos: opcoes.pleito ? lista(opcoes.pleito) : undefined,
+      aoProgresso: (p) => process.stderr.write(`\r${uf} ${p.pleito} mun ${p.mun}: ${p.secoes} seções, ${p.comInconsistencia} com inconsistência   `),
+    });
+    process.stderr.write('\n');
+    console.log(JSON.stringify({ uf, segundos: Math.round((Date.now() - inicio) / 1000), ...stats }, null, 2));
+  }
+}
+
 function inteiro(valor, nome, minimo = 1) {
   if (valor === undefined) return undefined;
   if (!/^\d+$/.test(valor) || Number(valor) < minimo) {
@@ -129,11 +145,12 @@ async function main(argv) {
     },
   });
   const [comando] = positionals;
-  if (!['eleicoes', 'coletar', 'painel'].includes(comando)) {
+  if (!['eleicoes', 'coletar', 'painel', 'extrair'].includes(comando)) {
     console.log(AJUDA);
     process.exitCode = 1;
     return;
   }
+  if (comando === 'extrair') return extrair(opcoes);
   opcoes.concorrencia = inteiro(opcoes.concorrencia, '--concorrencia');
   opcoes.porta = inteiro(opcoes.porta, '--porta', 0); // 0: porta livre qualquer
   const http = new HttpClient({ concorrencia: PADRAO.concorrencia, userAgent: PADRAO.userAgent });
