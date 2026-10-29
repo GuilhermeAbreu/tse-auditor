@@ -7,6 +7,22 @@ import * as turnos from '../../src/cruzamentos/turnos.js';
 import * as mesario from '../../src/cruzamentos/mesario.js';
 import * as horarios from '../../src/cruzamentos/horarios.js';
 import { rodarCruzamentos, resumir } from '../../src/cruzamentos/index.js';
+import { turnosDosPleitos } from '../../src/cruzamentos/comum.js';
+
+const T = { primeiro: 3220, segundo: 3221 };
+
+test('turnosDosPleitos: 1º e 2º turno do mesmo ciclo pelo ele-c.json', () => {
+  const pl = (cd, ciclo, turno) => ({ cd, ciclo, data: '', eleicoes: [{ cd: 1, nome: 'x', turno, cargos: [] }] });
+  const eleicoes = { pleitos: [pl('3220', 'ele2026', 1), pl('3221', 'ele2026', 2), pl('3000', 'ele2024', 2)] };
+  assert.deepEqual(turnosDosPleitos(eleicoes, [3221, 3220]), T);
+  assert.deepEqual(turnosDosPleitos(eleicoes, [3220]), { primeiro: 3220, segundo: null });
+  assert.deepEqual(turnosDosPleitos(eleicoes, [3220, 3000]), { primeiro: 3220, segundo: null });
+});
+
+test('turnos: sem os dois turnos não roda', async () => {
+  const db = await (await DuckDBInstance.create(':memory:')).connect();
+  assert.deepEqual(await turnos.executar(db, { uf: 'xx', turnos: { primeiro: 3220, segundo: null } }), []);
+});
 
 const SECOES = `CREATE TABLE secoes (pleito INTEGER, uf VARCHAR, mun VARCHAR, zona VARCHAR, secao VARCHAR, status VARCHAR,
   local INTEGER, aptos INTEGER, comparecimento INTEGER, abstencao INTEGER, qtdHabilitacaoAnoNascimento INTEGER,
@@ -44,7 +60,7 @@ test('limites: comparecimento acima dos aptos e votos acima do comparecimento', 
   const votos = [];
   for (let i = 1; i <= 3; i++) votos.push(voto(3220, i, 5, 'nominal', 11, i === 3 ? 201 : 200)); // senador: 2 votos por eleitor
   const db = await banco({ secoes: [secao(3220, 1, { aptos: 90 }), secao(3220, 2), secao(3220, 3)], votos });
-  const r = await limites.executar(db, { uf: 'xx' });
+  const r = await limites.executar(db, { uf: 'xx', turnos: T });
   assert.deepEqual(r.map((x) => [x.secao, x.sinal, x.pontuacao]), [
     ['0001', 'COMPARECIMENTO_ACIMA_APTOS', 100], ['0003', 'VOTOS_ACIMA_COMPARECIMENTO', 100]]);
   assert.equal(JSON.parse(r[1].detalhe).votosPorEleitor, 2);
@@ -64,7 +80,7 @@ test('turnos: ganho acima do disponível e variação atípica na zona', async (
     else votos.push(voto(3221, i, 1, 'nominal', 13, 50 + (i % 3)), voto(3221, i, 1, 'nominal', 22, 50 - (i % 3)));
   }
   const db = await banco({ secoes, votos });
-  const r = await turnos.executar(db, { uf: 'xx' });
+  const r = await turnos.executar(db, { uf: 'xx', turnos: T });
   const ganho = r.filter((x) => x.sinal === 'GANHO_ACIMA_DISPONIVEL');
   assert.deepEqual(ganho.map((x) => [x.secao, JSON.parse(x.detalhe).candidato, x.valor, x.referencia]), [['0007', 13, 40, 20]]);
   const variacao = r.filter((x) => x.sinal === 'VARIACAO_ATIPICA_ZONA').map((x) => x.secao);
@@ -79,7 +95,7 @@ test('mesario: taxa acima do local/zona/outro turno e abstenção caiu com mesá
     secoes.push(secao(3221, i, i === 1 ? { mes: 30, abst: 2, comp: 118 } : { mes: 4 + (i % 3) }));
   }
   const db = await banco({ secoes });
-  const r = await mesario.executar(db, { uf: 'xx' });
+  const r = await mesario.executar(db, { uf: 'xx', turnos: T });
   const sinais = new Set(r.filter((x) => x.secao === '0001' && x.pleito === 3221).map((x) => x.sinal));
   for (const s of ['MESARIO_ACIMA_LOCAL', 'MESARIO_ACIMA_ZONA', 'MESARIO_SUBIU_OUTRO_TURNO', 'ABSTENCAO_CAIU_MESARIO_SUBIU']) {
     assert.ok(sinais.has(s), s);
@@ -98,7 +114,7 @@ test('mesario: liberações manuais concentradas na última hora', async () => {
   }
   for (let k = 0; k < 10; k++) { ev('16', String(k * 5).padStart(2, '0'), 'hab_mesario'); ev('16', String(k * 5).padStart(2, '0'), 'voto_computado'); }
   const db = await banco({ secoes: [secao(3220, 1, { mes: 10, ano: 0 })], eventos });
-  const r = (await mesario.executar(db, { uf: 'xx' })).filter((x) => x.sinal === 'MESARIO_ULTIMA_HORA');
+  const r = (await mesario.executar(db, { uf: 'xx', turnos: T })).filter((x) => x.sinal === 'MESARIO_ULTIMA_HORA');
   assert.equal(r.length, 1);
   assert.equal(JSON.parse(r[0].detalhe).mesarioUltimaHora, 10);
 });
@@ -116,14 +132,14 @@ test('horarios: voto antes da abertura, voto após pausa depois das 17h e teste 
   ev('0003', '09:00:00', 'voto_computado'); ev('0003', '10:00:00', null, 'Fase da UE: Simulado'); ev('0003', '11:00:00', 'voto_computado');
   ev('0003', '10:30:00', null, 'Início do teste de Teclado do TE');
   const db = await banco({ secoes: [secao(3220, 1), secao(3220, 2), secao(3220, 3)], eventos });
-  const r = await horarios.executar(db, { uf: 'xx' });
+  const r = await horarios.executar(db, { uf: 'xx', turnos: T });
   assert.deepEqual(r.map((x) => [x.secao, x.sinal, x.valor]).sort(), [
     ['0002', 'VOTO_ANTES_ABERTURA', 1], ['0002', 'VOTO_APOS_PAUSA_17H', 2], ['0003', 'TESTE_CARGA_NO_DIA', 1]]);
 });
 
 test('rodarCruzamentos e resumir: contagens e ranking por pontuação máxima', async () => {
   const db = await banco({ secoes: [secao(3220, 1, { aptos: 90 }), secao(3220, 2)] });
-  const rows = await rodarCruzamentos(db, { uf: 'xx' });
+  const rows = await rodarCruzamentos(db, { uf: 'xx', turnos: T });
   const { contagem, ranking } = resumir(rows);
   assert.deepEqual(contagem, { 'limites/COMPARECIMENTO_ACIMA_APTOS': 1 });
   assert.equal(ranking[0].secao, '00001/0001/0001');

@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { rename, rm } from 'node:fs/promises';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { carregarParquet, lit, prepararContexto } from './comum.js';
+import { carregarParquet, linhas, lit, prepararContexto, turnosDosPleitos } from './comum.js';
 import * as limites from './limites.js';
 import * as turnos from './turnos.js';
 import * as mesario from './mesario.js';
@@ -16,20 +16,25 @@ const COLUNAS = [
   ['explicacoesCandidatas', 'VARCHAR'], ['detalhe', 'VARCHAR'],
 ];
 
-export async function rodarCruzamentos(db, { uf }) {
+export async function rodarCruzamentos(db, { uf, turnos }) {
   await prepararContexto(db, { uf });
   const todos = [];
-  for (const c of CRUZAMENTOS) todos.push(...(await c.executar(db, { uf })));
+  for (const c of CRUZAMENTOS) todos.push(...(await c.executar(db, { uf, turnos })));
   return todos;
 }
 
-export async function analisarUF({ dados, uf }) {
+// turnos: { primeiro, segundo } já resolvidos, ou derivados de `eleicoes` (ele-c.json) e dos pleitos nos Parquet.
+export async function analisarUF({ dados, uf, turnos, eleicoes }) {
   const pasta = path.join(dados, 'parquet', uf.toUpperCase());
   const instancia = await DuckDBInstance.create(':memory:');
   const db = await instancia.connect();
   try {
     await carregarParquet(db, pasta);
-    const rows = await rodarCruzamentos(db, { uf });
+    if (!turnos) {
+      const presentes = (await linhas(db, 'SELECT DISTINCT pleito FROM secoes')).map((r) => r.pleito);
+      turnos = turnosDosPleitos(eleicoes, presentes);
+    }
+    const rows = await rodarCruzamentos(db, { uf, turnos });
     await db.run(`CREATE TABLE achados (${COLUNAS.map(([c, t]) => `"${c}" ${t}`).join(', ')})`);
     const ap = await db.createAppender('achados');
     for (const r of rows) {
@@ -47,7 +52,7 @@ export async function analisarUF({ dados, uf }) {
     await db.run(`COPY achados TO ${lit(`${destino}.part`)} (FORMAT PARQUET, COMPRESSION ZSTD)`);
     await rm(destino, { force: true });
     await rename(`${destino}.part`, destino);
-    return { destino, rows };
+    return { destino, rows, turnos };
   } finally {
     db.closeSync();
     instancia.closeSync();

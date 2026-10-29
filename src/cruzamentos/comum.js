@@ -1,7 +1,25 @@
 // Peças comuns dos cruzamentos: carga dos Parquet como views, contexto de explicações candidatas,
 // z-score robusto e o formato fixo de cada achado. Tudo em SQL do DuckDB.
-export const PRIMEIRO = 3220; // pleito do 1º turno
-export const SEGUNDO = 3221; // pleito do 2º turno
+
+// Pleitos do 1º e 2º turno, tirados das eleições do ele-c.json entre os pleitos presentes nos Parquet:
+// o 2º turno é um pleito com eleições de turno 2 cujo ciclo também tem um pleito de turno 1 presente.
+// Sem par, devolve só o que houver (segundo = null): o cruzamento "turnos" e as comparações entre turnos não rodam.
+export function turnosDosPleitos(eleicoes, presentes) {
+  const ps = [...new Set(presentes.map(String))]
+    .map((cd) => eleicoes.pleitos.find((p) => p.cd === cd)).filter(Boolean)
+    .map((p) => ({ cd: Number(p.cd), ciclo: p.ciclo, turno: Math.max(...p.eleicoes.map((e) => e.turno)) }))
+    .sort((a, b) => a.cd - b.cd);
+  for (const s of ps.filter((p) => p.turno === 2)) {
+    const p = ps.find((x) => x.turno === 1 && x.ciclo === s.ciclo);
+    if (p) return { primeiro: p.cd, segundo: s.cd };
+  }
+  return { primeiro: ps.find((p) => p.turno === 1)?.cd ?? ps[0]?.cd ?? null, segundo: null };
+}
+
+export const temDoisTurnos = (t) => t?.primeiro != null && t?.segundo != null;
+// SQL: pleito do outro turno (NULL se não há os dois turnos).
+export const outroTurno = (t, col) => (temDoisTurnos(t)
+  ? `CASE ${col} WHEN ${t.primeiro} THEN ${t.segundo} WHEN ${t.segundo} THEN ${t.primeiro} END` : 'NULL');
 
 // Horas a somar ao horário local da urna para chegar ao horário de Brasília (votação 8h–17h de Brasília).
 export const DESLOC_BRASILIA = { AC: 2, AM: 1, RO: 1, RR: 1, MT: 1, MS: 1 };

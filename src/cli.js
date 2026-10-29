@@ -16,7 +16,8 @@ const AJUDA = `uso:
   tse-auditor coletar --pleito 3220,3221 [--uf ac,al] [--dados <pasta>] [--concorrencia 4]
   tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3000] [--sem-iniciar]
   tse-auditor extrair --uf ac [--pleito 3220,3221] [--dados <pasta>]   (BU/RDV/log -> parquet/<UF>/)
-  tse-auditor analisar --uf ac [--dados <pasta>]                       (cruzamentos -> parquet/<UF>/achados.parquet)
+  tse-auditor analisar --uf ac [--dados <pasta>] [--turnos 3220,3221]  (cruzamentos -> parquet/<UF>/achados.parquet)
+    sem --turnos, o 1º/2º turno sai do ele-c.json (pleitos presentes nos Parquet); "--turnos 3220" = só um turno
 
 O painel também configura pleitos, UFs e concorrência; a última configuração aplicada fica em
 $XDG_CONFIG_HOME/tse-auditor/config.json (ou TSE_CONFIG) e é usada quando o painel abre sem opções.`;
@@ -128,11 +129,20 @@ async function extrair(opcoes) {
 async function analisar(opcoes) {
   if (!opcoes.uf) throw new Error('informe --uf');
   const dados = opcoes.dados ?? pastaDados(PADRAO.hd, 'ele2026');
+  let turnos;
+  let eleicoes;
+  if (opcoes.turnos !== undefined) {
+    const [primeiro = null, segundo = null] = lista(opcoes.turnos).map(Number);
+    turnos = { primeiro, segundo };
+  } else {
+    eleicoes = await buscarEleicoes(new HttpClient({ concorrencia: 1, userAgent: PADRAO.userAgent }), PADRAO);
+  }
   for (const uf of lista(opcoes.uf)) {
     const inicio = Date.now();
-    const { destino, rows } = await analisarUF({ dados, uf });
+    const r = await analisarUF({ dados, uf, turnos, eleicoes });
+    const { destino, rows } = r;
     const { contagem, ranking } = resumir(rows);
-    console.log(JSON.stringify({ uf, segundos: Math.round((Date.now() - inicio) / 1000), destino, achados: rows.length, contagem }, null, 2));
+    console.log(JSON.stringify({ uf, segundos: Math.round((Date.now() - inicio) / 1000), destino, turnos: r.turnos, achados: rows.length, contagem }, null, 2));
     console.log('top 10 seções (mun/zona/secao, pontuação máxima, sinais, explicações candidatas):');
     for (const s of ranking) console.log(`  ${s.secao}  ${s.max}  ${s.sinais.join(' ')}  [${s.explicacoes.join(',')}]`);
   }
@@ -156,6 +166,7 @@ async function main(argv) {
       dados: { type: 'string' },
       concorrencia: { type: 'string' },
       porta: { type: 'string' },
+      turnos: { type: 'string' },
       'sem-iniciar': { type: 'boolean' },
     },
   });

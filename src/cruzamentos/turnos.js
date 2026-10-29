@@ -1,9 +1,11 @@
-import { achados, filtroUF, linhas, PRIMEIRO, SEGUNDO, zRobusto } from './comum.js';
+import { achados, filtroUF, linhas, temDoisTurnos, zRobusto } from './comum.js';
 
 export const id = 'turnos';
 export const descricao = 'Presidente 1º × 2º turno por seção: ganho de cada finalista × votos disponíveis; variação atípica na zona.';
 
-export async function executar(db, { uf }) {
+export async function executar(db, { uf, turnos }) {
+  if (!temDoisTurnos(turnos)) return [];
+  const { primeiro: PRIMEIRO, segundo: SEGUNDO } = turnos;
   return linhas(db, achados(`
     WITH s AS (SELECT pleito, uf, mun, zona, secao, comparecimento FROM secoes WHERE status = 'ok' AND ${filtroUF(uf)}),
     p AS (SELECT pleito, mun, zona, secao, tipo, numero, sum(quantidade) q FROM votos

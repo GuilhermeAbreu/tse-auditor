@@ -1,12 +1,13 @@
-import { achados, desloc, filtroUF, linhas, SEGUNDO, zRobusto } from './comum.js';
+import { achados, desloc, filtroUF, linhas, outroTurno, zRobusto } from './comum.js';
 
 export const id = 'mesario';
 export const descricao = 'Liberação pelo mesário: taxa × local/zona/outro turno, concentração na última hora, abstenção caiu e liberação subiu.';
 
 const HAB = "('hab_biometrica', 'hab_ano_nascimento', 'hab_mesario', 'hab_mesario_nao_associado')";
 
-export async function executar(db, { uf }) {
+export async function executar(db, { uf, turnos }) {
   const d = desloc(uf);
+  const SEGUNDO = turnos?.segundo ?? 'NULL';
   return linhas(db, achados(`
     WITH b AS (SELECT pleito, uf, mun, zona, secao, local, aptos, abstencao, logDia, comparecimento comp, qtdHabilitacaoMesario mes,
                  qtdHabilitacaoMesario::DOUBLE / comparecimento taxa
@@ -14,7 +15,7 @@ export async function executar(db, { uf }) {
     gl AS (SELECT pleito, mun, zona, local, median(taxa) mL, mad(taxa) dL, count(*) nL FROM b GROUP BY ALL),
     gz AS (SELECT pleito, zona, median(taxa) mZ, mad(taxa) dZ, count(*) nZ FROM b GROUP BY ALL),
     o AS (SELECT x.*, y.taxa taxaOutro, x.taxa - y.taxa delta, (y.abstencao - x.abstencao)::DOUBLE / nullif(x.aptos, 0) quedaAbs
-          FROM b x LEFT JOIN b y ON y.mun = x.mun AND y.zona = x.zona AND y.secao = x.secao AND y.pleito <> x.pleito),
+          FROM b x LEFT JOIN b y ON y.mun = x.mun AND y.zona = x.zona AND y.secao = x.secao AND y.pleito = ${outroTurno(turnos, 'x.pleito')}),
     gd AS (SELECT pleito, zona, median(delta) mD, mad(delta) dD, median(quedaAbs) mA, mad(quedaAbs) dA FROM o GROUP BY ALL),
     x AS (SELECT o.*, mL, nL, mZ, nZ, mD,
             ${zRobusto('taxa', 'mL', 'dL', 0.01)} zL, ${zRobusto('taxa', 'mZ', 'dZ', 0.01)} zZ,
