@@ -422,7 +422,6 @@ async function carregarRanking() {
   if (an.rankingDe !== uf) {
     $('an-sinal').replaceChildren(el('option', { value: '', textContent: 'todos' }),
       ...r.sinais.map((s) => el('option', { value: s.sinal, textContent: `${SINAIS[s.sinal]?.[1] ?? s.sinal} (${num(s.n)})` })));
-    $('an-secao').hidden = true;
   }
   an.rankingDe = uf;
   $('an-msg').textContent = `${num(r.secoes.length)} seções destoantes${r.secoes.length === 200 ? ' (primeiras 200)' : ''}; clique numa linha para ver os sinais`;
@@ -447,13 +446,13 @@ const svg = (tag, attrs = {}, ...filhos) => {
 };
 
 // Barras por 10 min (horário local da urna), empilhadas por tipo de habilitação.
-function linhaDoTempo(t) {
+function linhaDoTempo(t, escala) {
   const ivs = t.intervalos;
   if (!ivs.length) return el('p', { className: 'dica', textContent: 'sem votos no log do dia da eleição' });
   const min = (h) => Number(h.slice(0, 2)) * 60 + Number(h.slice(3, 5));
-  const ini = Math.min(...ivs.map((i) => min(i.inicio)), 7 * 60);
-  const fim = Math.max(...ivs.map((i) => min(i.inicio) + 10), 17 * 60);
-  const maxV = Math.max(...ivs.map((i) => i.votos), 1);
+  const ini = 6 * 60;
+  const fim = 18 * 60; // mesmo eixo para os dois turnos
+  const maxV = escala ?? Math.max(...ivs.map((i) => i.votos), 1);
   const L = 40, A = 140, W = Math.max(400, ((fim - ini) / 10) * 8), x = (m) => L + ((m - ini) / 10) * 8;
   const g = svg('svg', { viewBox: `0 0 ${L + W + 10} ${A + 30}`, class: 'tempo', role: 'img' });
   g.append(svg('title', {}, `votos por 10 minutos, pleito ${t.pleito}`));
@@ -475,45 +474,136 @@ function linhaDoTempo(t) {
   return g;
 }
 
-async function abrirSecao(uf, s) {
-  const box = $('an-secao');
-  box.hidden = false;
-  box.replaceChildren(el('p', { textContent: 'carregando…' }));
-  try {
-    const d = await obterJson(`/api/analise/${uf}/secao/${encodeURIComponent(s.mun)}/${encodeURIComponent(s.zona)}/${encodeURIComponent(s.secao)}`);
-    const turno = (t) => {
-      const pres = d.presidente.filter((p) => p.pleito === t.pleito);
-      const lt = d.linhaDoTempo.find((x) => x.pleito === t.pleito);
-      const par = (k, v) => [el('dt', { textContent: k }), el('dd', { textContent: v ?? '—' })];
-      return el('div', {},
-        el('h4', { textContent: `Pleito ${t.pleito} (${t.status})` }),
-        el('dl', {}, ...par('Aptos', t.aptos), ...par('Comparecimento', t.comparecimento), ...par('Abstenção', t.abstencao),
-          ...par('Hab. biometria', t.qtdHabilitacaoBiometrica), ...par('Hab. mesário', t.qtdHabilitacaoMesario),
-          ...par('Hab. ano de nascimento', t.qtdHabilitacaoAnoNascimento), ...par('Tipo de urna', t.tipoUrna),
-          ...par('Abertura', t.abertura), ...par('Encerramento', t.encerramento),
-          ...par('1º / último voto (log)', lt ? `${lt.primeiroVoto} / ${lt.ultimoVoto} (${lt.votos} votos)` : null),
-          ...par('Inconsistências', t.inconsistencias), ...par('Seções agregadas', t.secoesAgregadas)),
-        el('h5', { textContent: 'Presidente (BU)' }),
-        el('ul', {}, ...pres.map((p) => el('li', { textContent: `${p.tipo === 'nominal' ? p.numero : p.tipo}: ${num(p.votos)}` }))),
-        el('h5', { textContent: `Linha do tempo (horário local da urna; +${d.horasParaBrasilia} h = Brasília)` }),
-        lt ? linhaDoTempo(lt) : el('p', { className: 'dica', textContent: 'sem log' }));
-    };
-    const legenda = el('p', { className: 'legenda' }, ...Object.keys(CORES).map((k) =>
-      el('span', {}, Object.assign(el('i'), { style: `background:${CORES[k]}` }), ROTULO_HAB[k])));
-    box.replaceChildren(
-      el('h3', { textContent: `${uf.toUpperCase()} município ${d.mun} zona ${d.zona} seção ${d.secao}: destoante (${d.achados.length} sinais)` }),
-      el('div', { className: 'turnos' }, ...d.turnos.map(turno)), legenda,
-      el('h4', { textContent: 'Sinais (verificar as explicações candidatas antes de qualquer conclusão)' }),
-      el('table', {}, el('thead', {}, el('tr', {}, ...['Pleito', 'Cruzamento', 'Sinal', 'Pontuação', 'Valor', 'Referência', 'Explicações candidatas', 'Detalhe']
-        .map((h) => el('th', { textContent: h })))),
-      el('tbody', {}, ...d.achados.map((a) => el('tr', {}, td(String(a.pleito)), td(a.cruzamento), tdBadges([a.sinal], badgeSinal), td(String(a.pontuacao)),
-        td(a.valor == null ? null : String(Math.round(a.valor * 10000) / 10000)),
-        td(a.referencia == null ? null : String(Math.round(a.referencia * 10000) / 10000)),
-        tdBadges(listaExp(a.explicacoesCandidatas), badgeExp), el('td', {}, el('code', { textContent: a.detalhe ?? '' })))))));
-  } catch (err) {
-    box.replaceChildren(el('p', { className: 'erro', textContent: `não foi possível abrir a seção: ${err.message}` }));
+const pct = (v) => (v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`);
+const hora = (ts) => String(ts ?? '').slice(11, 16) || '—';
+const vezes = (z) => `${Math.abs(z).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}×`;
+
+// Frase em linguagem comum explicando por que o achado apareceu.
+function frase(a, nomeTurno) {
+  let d = {};
+  try { d = JSON.parse(a.detalhe || '{}'); } catch { /* detalhe inválido: usa só o texto do glossário */ }
+  const t = nomeTurno(a.pleito);
+  switch (a.sinal) {
+    case 'MESARIO_ACIMA_LOCAL':
+      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}). Nas ${d.secoesNoLocal} seções do mesmo local de votação, o normal foi ${pct(a.referencia)}, um desvio ${vezes(d.zRobusto)} acima do esperado.`;
+    case 'MESARIO_ACIMA_ZONA':
+      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}). Nas ${d.secoesNaZona} seções da zona, o normal foi ${pct(a.referencia)}, um desvio ${vezes(d.zRobusto)} acima do esperado.`;
+    case 'MESARIO_SUBIU_OUTRO_TURNO':
+      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}), contra ${pct(a.referencia)} no outro turno na mesma seção, um aumento ${vezes(d.zRobusto)} acima do que ocorreu na zona.`;
+    case 'MESARIO_ULTIMA_HORA':
+      return `No ${t}, ${d.mesarioUltimaHora} das ${d.mesarioDia} liberações pelo mesário aconteceram na última hora, quando só ${d.votosUltimaHora} dos ${d.votosDia} votos do dia foram registrados.`;
+    case 'VARIACAO_ATIPICA_ZONA':
+      return `O candidato ${d.candidato} teve ${d.v1} votos no 1º turno e ${d.v2} no 2º (comparecimento: ${d.comparecimento1} → ${d.comparecimento2}). Essa mudança foi ${vezes(d.zRobusto)} maior que o normal entre as ${d.secoesNaZona} seções da zona.`;
+    case 'VOTO_APOS_PAUSA_17H':
+      return `No ${t}, ${d.votos} voto(s) foram registrados entre ${hora(d.retomada)} e ${hora(d.ultimoVoto)} (horário local), depois de uma pausa de 30 min ou mais após o encerramento.`;
+    case 'COMPARECIMENTO_ACIMA_APTOS':
+      return `No ${t}, o comparecimento (${d.comparecimento}) é maior que o número de aptos (${d.aptos}).`;
+    default:
+      return `No ${t}: ${SINAIS[a.sinal]?.[2] ?? a.sinal}`;
   }
 }
+
+function fecharModal() { $('an-modal').close(); }
+
+async function abrirSecao(uf, s) {
+  const modal = $('an-modal');
+  const corpo = $('an-modal-corpo');
+  corpo.replaceChildren(el('p', { textContent: 'carregando…' }));
+  if (!modal.open) modal.showModal();
+  try {
+    const d = await obterJson(`/api/analise/${uf}/secao/${encodeURIComponent(s.mun)}/${encodeURIComponent(s.zona)}/${encodeURIComponent(s.secao)}`);
+    const turnos = [...d.turnos].sort((x, y) => x.pleito - y.pleito);
+    const nomeTurno = (p) => (turnos.findIndex((t) => t.pleito === p) === 1 ? '2º turno' : '1º turno');
+    const [t1, t2] = turnos;
+    const pontuacao = Math.max(...d.achados.map((a) => a.pontuacao), 0);
+
+    // O que é destacado na tabela: candidatos e linhas citados pelos sinais.
+    const destaque = new Set();
+    for (const a of d.achados) {
+      if (a.sinal.startsWith('MESARIO') || a.sinal.startsWith('ABSTENCAO')) destaque.add('mesario');
+      try { const j = JSON.parse(a.detalhe || '{}'); if (j.candidato != null) destaque.add(`c${j.candidato}`); } catch { /* ignora */ }
+    }
+
+    // Resumo: por que a seção apareceu.
+    const cartoesAchados = d.achados.map((a) => {
+      const exp = listaExp(a.explicacoesCandidatas);
+      return el('div', { className: 'achado' },
+        el('div', {}, badgeSinal(a.sinal), el('span', { className: 'pts', textContent: `pontuação ${a.pontuacao}` })),
+        el('p', { textContent: frase(a, nomeTurno) }),
+        exp.length
+          ? el('p', { className: 'dica' }, document.createTextNode('Possível explicação técnica: '), ...exp.map(badgeExp))
+          : el('p', { className: 'sem-exp', textContent: 'Nenhuma explicação técnica encontrada automaticamente: vale verificar com prioridade.' }));
+    });
+
+    // Tabela comparativa 1º × 2º turno.
+    const val = (t, k) => (t ? t[k] : null);
+    const votos = (t, chave) => {
+      if (!t) return null;
+      const v = d.presidente.filter((p) => p.pleito === t.pleito && (p.tipo === 'nominal' ? `c${p.numero}` : p.tipo) === chave);
+      return v.length ? v.reduce((x, p) => x + p.votos, 0) : 0;
+    };
+    const fmt = (v, base) => (v == null ? '—' : base ? `${num(v)} (${pct(v / base)})` : num(v));
+    const dif = (a, b) => {
+      if (a == null || b == null) return el('td', { textContent: '—' });
+      const x = b - a;
+      return el('td', { className: x > 0 ? 'sobe' : x < 0 ? 'desce' : '', textContent: x === 0 ? '0' : `${x > 0 ? '+' : ''}${num(x)}` });
+    };
+    const linha = (rotulo, a, b, baseA, baseB, chave) => el('tr', { className: destaque.has(chave) ? 'destaque' : '' },
+      el('th', { textContent: rotulo }), td(fmt(a, baseA)), td(fmt(b, baseB)), dif(a, b));
+    const grupo = (titulo) => el('tr', { className: 'grupo' }, el('th', { colSpan: 4, textContent: titulo }));
+    const c1 = val(t1, 'comparecimento'), c2 = val(t2, 'comparecimento');
+    const chavesPres = [...new Set(d.presidente.map((p) => (p.tipo === 'nominal' ? `c${p.numero}` : p.tipo)))]
+      .sort((x, y) => (x[0] === 'c') === (y[0] === 'c') ? x.localeCompare(y, 'pt', { numeric: true }) : x[0] === 'c' ? -1 : 1);
+    const tabela = el('table', { className: 'comparacao' },
+      el('thead', {}, el('tr', {}, el('th'), el('th', { textContent: '1º turno' }), el('th', { textContent: '2º turno' }), el('th', { textContent: 'Diferença' }))),
+      el('tbody', {},
+        grupo('Eleitores'),
+        linha('Aptos', val(t1, 'aptos'), val(t2, 'aptos')),
+        linha('Compareceram', c1, c2, val(t1, 'aptos'), val(t2, 'aptos')),
+        linha('Abstenção', val(t1, 'abstencao'), val(t2, 'abstencao'), val(t1, 'aptos'), val(t2, 'aptos')),
+        grupo('Como o eleitor foi liberado (% de quem compareceu)'),
+        linha('Biometria', val(t1, 'qtdHabilitacaoBiometrica'), val(t2, 'qtdHabilitacaoBiometrica'), c1, c2),
+        linha('Pelo mesário', val(t1, 'qtdHabilitacaoMesario'), val(t2, 'qtdHabilitacaoMesario'), c1, c2, 'mesario'),
+        linha('Ano de nascimento', val(t1, 'qtdHabilitacaoAnoNascimento'), val(t2, 'qtdHabilitacaoAnoNascimento'), c1, c2),
+        grupo('Presidente (% de quem compareceu)'),
+        ...chavesPres.map((k) => linha(k[0] === 'c' ? `Candidato ${k.slice(1)}` : k === 'branco' ? 'Brancos' : k === 'nulo' ? 'Nulos' : k,
+          votos(t1, k), votos(t2, k), c1, c2, k))));
+
+    // Linhas do tempo na mesma escala.
+    const lts = turnos.map((t) => d.linhaDoTempo.find((x) => x.pleito === t.pleito));
+    const escala = Math.max(1, ...lts.flatMap((lt) => (lt ? lt.intervalos.map((i) => i.votos) : [])));
+    const legenda = el('p', { className: 'legenda' }, ...Object.keys(CORES).map((k) =>
+      el('span', {}, Object.assign(el('i'), { style: `background:${CORES[k]}` }), ROTULO_HAB[k])));
+    const tempos = el('div', { className: 'tempos' }, ...turnos.map((t, i) => el('div', {},
+      el('h5', { textContent: `${nomeTurno(t.pleito)}${lts[i] ? `: ${lts[i].votos} votos, de ${lts[i].primeiroVoto.slice(0, 5)} a ${lts[i].ultimoVoto.slice(0, 5)}` : ''}` }),
+      lts[i] ? linhaDoTempo(lts[i], escala) : el('p', { className: 'dica', textContent: 'sem log' }))));
+
+    // Dados técnicos, recolhidos.
+    const tecnico = el('details', {}, el('summary', { textContent: 'Dados técnicos' }),
+      el('table', {}, el('thead', {}, el('tr', {}, el('th'), ...turnos.map((t) => el('th', { textContent: `${nomeTurno(t.pleito)} (pleito ${t.pleito})` })))),
+        el('tbody', {}, ...[['Situação da extração', 'status'], ['Local de votação', 'local'], ['Tipo de urna', 'tipoUrna'], ['Abertura', 'abertura'],
+          ['Encerramento', 'encerramento'], ['1º voto (log)', 'logPrimeiroVoto'], ['Último voto (log)', 'logUltimoVoto'],
+          ['Inconsistências', 'inconsistencias'], ['Seções agregadas', 'secoesAgregadas'], ['Agregada em', 'agregadaEm']]
+          .map(([r, k]) => el('tr', {}, el('th', { textContent: r }), ...turnos.map((t) => td(t[k] == null || t[k] === '' ? '—' : String(t[k]))))))),
+      el('p', { className: 'dica', textContent: `Horários da urna em horário local (+${d.horasParaBrasilia} h = Brasília).` }),
+      ...d.achados.map((a) => el('pre', { textContent: `${a.sinal} (${nomeTurno(a.pleito)}): ${a.detalhe ?? ''}` })));
+
+    corpo.replaceChildren(
+      el('header', { className: 'modal-topo' },
+        el('h3', { textContent: `${uf.toUpperCase()} · Município ${d.mun} · Zona ${d.zona} · Seção ${d.secao}` }),
+        el('span', { className: 'pts grande', textContent: `pontuação máx. ${pontuacao}` })),
+      el('h4', { textContent: 'Por que esta seção apareceu' }), ...cartoesAchados,
+      el('p', { className: 'dica', textContent: 'Seção destoante não é prova de nada: confira as explicações antes de qualquer conclusão.' }),
+      el('h4', { textContent: 'Comparação entre os turnos' }), tabela,
+      el('h4', { textContent: 'Votos ao longo do dia (a cada 10 min)' }), legenda, tempos,
+      tecnico);
+  } catch (err) {
+    corpo.replaceChildren(el('p', { className: 'erro', textContent: `não foi possível abrir a seção: ${err.message}` }));
+  }
+}
+
+$('an-modal-fechar').addEventListener('click', fecharModal);
+$('an-modal').addEventListener('click', (ev) => { if (ev.target === $('an-modal')) fecharModal(); });
 
 $('an-ufs').addEventListener('click', async (ev) => {
   const b = ev.target.closest('button[data-analisar]');
