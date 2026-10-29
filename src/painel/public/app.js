@@ -362,7 +362,7 @@ function desenharGlossario() {
   const linha = (badge, texto) => el('li', {}, badge, document.createTextNode(` ${texto}`));
   $('an-glossario').replaceChildren(
     el('summary', { textContent: 'Glossário: sinais e explicações candidatas' }),
-    el('p', { className: 'dica', textContent: 'Pontuação máx.: 0–100, quanto a seção foge do padrão das vizinhas/zona/outro turno (10 × desvio robusto, limitado a 100). Explicações candidatas são causas técnicas normais detectadas nos dados que podem explicar o sinal.' }),
+    el('p', { className: 'dica', textContent: 'Pontuação máx.: 0–100, quanto a seção foge do padrão das vizinhas/zona/outro turno (10 × distância estatística robusta, limitado a 100; até ~30 é variação comum, acima de ~50 é bem fora do normal). Números pequenos (poucos eleitores) pedem cautela. Explicações candidatas são causas técnicas normais detectadas nos dados que podem explicar o sinal.' }),
     ...Object.entries(GRUPOS).map(([g, nome]) => el('div', {}, el('h4', { textContent: nome }),
       el('ul', {}, ...Object.entries(SINAIS).filter(([, v]) => v[0] === g).map(([c, v]) => linha(badgeSinal(c), v[2]))))),
     el('h4', { textContent: 'Explicações candidatas' }),
@@ -476,7 +476,8 @@ function linhaDoTempo(t, escala) {
 
 const pct = (v) => (v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`);
 const hora = (ts) => String(ts ?? '').slice(11, 16) || '—';
-const vezes = (z) => `${Math.abs(z).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}×`;
+const vezes = (v, r) => (r > 0 ? `cerca de ${(v / r).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} vezes` : 'bem acima de');
+const distancia = (z) => `distância estatística ${Math.abs(z).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}`;
 
 // Frase em linguagem comum explicando por que o achado apareceu.
 function frase(a, nomeTurno) {
@@ -485,15 +486,15 @@ function frase(a, nomeTurno) {
   const t = nomeTurno(a.pleito);
   switch (a.sinal) {
     case 'MESARIO_ACIMA_LOCAL':
-      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}). Nas ${d.secoesNoLocal} seções do mesmo local de votação, o normal foi ${pct(a.referencia)}, um desvio ${vezes(d.zRobusto)} acima do esperado.`;
+      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}). Nas ${d.secoesNoLocal} seções do mesmo local de votação, o normal foi ${pct(a.referencia)}: ${vezes(a.valor, a.referencia)} o normal (${distancia(d.zRobusto)}).`;
     case 'MESARIO_ACIMA_ZONA':
-      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}). Nas ${d.secoesNaZona} seções da zona, o normal foi ${pct(a.referencia)}, um desvio ${vezes(d.zRobusto)} acima do esperado.`;
+      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}). Nas ${d.secoesNaZona} seções da zona, o normal foi ${pct(a.referencia)}: ${vezes(a.valor, a.referencia)} o normal (${distancia(d.zRobusto)}).`;
     case 'MESARIO_SUBIU_OUTRO_TURNO':
-      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}), contra ${pct(a.referencia)} no outro turno na mesma seção, um aumento ${vezes(d.zRobusto)} acima do que ocorreu na zona.`;
+      return `No ${t}, o mesário liberou ${d.mesario} de ${d.comparecimento} eleitores (${pct(a.valor)}), contra ${pct(a.referencia)} no outro turno na mesma seção, um aumento bem maior que o das outras seções da zona (${distancia(d.zRobusto)}).`;
     case 'MESARIO_ULTIMA_HORA':
-      return `No ${t}, ${d.mesarioUltimaHora} das ${d.mesarioDia} liberações pelo mesário aconteceram na última hora, quando só ${d.votosUltimaHora} dos ${d.votosDia} votos do dia foram registrados.`;
+      return `No ${t}, ${d.mesarioUltimaHora} das ${d.mesarioDia} liberações pelo mesário aconteceram na última hora, quando só ${d.votosUltimaHora} dos ${d.votosDia} votos do dia foram registrados (${pct(d.votosUltimaHora ? d.mesarioUltimaHora / d.votosUltimaHora : null)} dos votos da última hora liberados pelo mesário, contra ${pct(d.votosDia ? d.mesarioDia / d.votosDia : null)} no dia).`;
     case 'VARIACAO_ATIPICA_ZONA':
-      return `O candidato ${d.candidato} teve ${d.v1} votos no 1º turno e ${d.v2} no 2º (comparecimento: ${d.comparecimento1} → ${d.comparecimento2}). Essa mudança foi ${vezes(d.zRobusto)} maior que o normal entre as ${d.secoesNaZona} seções da zona.`;
+      return `O candidato ${d.candidato} teve ${d.v1} votos no 1º turno e ${d.v2} no 2º (comparecimento: ${d.comparecimento1} → ${d.comparecimento2}). Essa mudança foi bem maior que a das outras ${d.secoesNaZona} seções da zona (${distancia(d.zRobusto)}).`;
     case 'VOTO_APOS_PAUSA_17H':
       return `No ${t}, ${d.votos} voto(s) foram registrados entre ${hora(d.retomada)} e ${hora(d.ultimoVoto)} (horário local), depois de uma pausa de 30 min ou mais após o encerramento.`;
     case 'COMPARECIMENTO_ACIMA_APTOS':
