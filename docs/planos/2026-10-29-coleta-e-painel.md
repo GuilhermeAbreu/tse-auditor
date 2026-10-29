@@ -10,6 +10,19 @@
 
 ---
 
+## Divergências da implementação (leia antes de usar este plano como referência)
+
+O código em `src/` é a fonte da verdade. Este plano descreve a primeira versão; as revisões de código mudaram vários pontos:
+
+- **Manifest:** gravações numa transação aberta, confirmada a cada 1 s ou 500 escritas (`journal_mode=TRUNCATE`, `synchronous=NORMAL`). Use `descarregar()`/`fechar()` para confirmar. Após um COMMIT com falha (HD sumiu) as escritas passam a lançar o mesmo erro (`manifest.erro`) até reabrir o manifest; as leituras continuam funcionando. Novos métodos: `reabrirMunicipio`, `arquivo`, `arquivosOkDoMunicipio`, `marcarArquivoInconsistente`. `arquivos` e `conjuntos` são `WITHOUT ROWID`.
+- **Coletor:** antes de empacotar, `#conferirStaging` confere cada arquivo do staging contra o manifest (tamanho + sha512) e cada linha `ok` contra staging e zip; o que não bate volta para a fila. Índice inválido vira erro da seção. Disjuntor de rede: 20 falhas seguidas sem resposta → `SemConexaoError` para a coleta. Verificação `'nenhuma'` quando não havia ETag nem `.vsc`. O `-aux.json` só vai ao staging se a seção terminou bem ou baixou algo novo (evita reempacotar à toa).
+- **Empacotamento:** zip escrito com fsync (arquivo e pasta), checagem de espaço antes, `ZipCorrompidoError` (zip ilegível é posto de lado como `.corrompido-<ts>` e o município é rebaixado uma vez), `listarNomesZip`.
+- **HTTP:** 8 tentativas, espera com variação aleatória (jitter) e pausa global de todas as requisições após um 429.
+- **Integridade:** o hash do diretório usa base64 em que o TSE troca `/` por `-` (não é base64url); `digestoDoDiretorio` converte antes de decodificar.
+- **Painel/CLI:** Host restrito a `127.0.0.1`/`localhost`, POST exige o cabeçalho `x-tse-auditor: 1`; rotas globais `POST /api/coleta/iniciar|parar`; status de UF `aguardando`, `baixando`, `pausando`, `pausada`, `baixado`, `baixado_com_erros`; projeção = bytes ÷ seções concluídas × total, preliminar até max(1000, 1%) das seções; `manifestErro` no estado.
+- **Vocabulário de status:** seções `pendente`, `completa`, `erro`, `sem_arquivos`, `agregada`; arquivos `pendente`, `ok`, `erro`; verificação `dir`, `vsc`, `md5`, `nenhuma`.
+- **Adiado:** `--cargo` (vai para a análise); abaixo de 20 GB livres a coleta para (não "pausa") e precisa ser reiniciada; seções `sem_arquivos` não são revisitadas; reempacotar reescreve o zip inteiro do município.
+
 ## Fatos confirmados no servidor do TSE (29/10/2026)
 
 Estes formatos foram verificados contra `resultados.tse.jus.br` e são a base dos testes.
