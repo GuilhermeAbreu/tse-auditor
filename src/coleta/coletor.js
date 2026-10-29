@@ -95,6 +95,125 @@ export class Coletor extends EventEmitter {
     }
   }
 
+  // Baixa o índice da seção e todos os conjuntos de arquivos, verificando cada um.
+  // Falhas ficam registradas no manifest; só erros de disco sobem (e param a coleta).
+  async processarSecao(s) {
+    const falhar = (erro) => this.manifest.finalizarSecao(s, { status: 'erro', erro });
+    let r;
+    try {
+      r = await this.http.get(this.urls.indiceSecao({ ciclo: this.ciclo, ...s }));
+    } catch (err) {
+      return falhar(`índice: ${err.message}`);
+    }
+    if (r.status !== 200) return falhar(`índice: HTTP ${r.status}`);
+    let indice;
+    try {
+      indice = lerIndiceSecao(JSON.parse(r.body.toString('utf8')));
+    } catch (err) {
+      return falhar(`índice ilegível: ${err.message}`);
+    }
+
+    const staging = this.#pastaStaging(s.pleito, s.uf, s.mun);
+    await gravarAtomico(path.join(staging, s.zona, s.secao, nomeIndiceSecao(s)), r.body);
+    if (indice.conjuntos.length === 0) {
+      this.manifest.finalizarSecao(s, { status: 'sem_arquivos' });
+      return;
+    }
+
+    this.manifest.registrarIndice(s, indice.conjuntos, (hash, nome) => this.urls.arquivo({ ciclo: this.ciclo, ...s }, hash, nome));
+    for (const { hash } of indice.conjuntos) await this.#baixarConjunto(s, hash, staging);
+
+    const arquivos = this.manifest.arquivosDaSecao(s);
+    const bytes = arquivos.reduce((total, a) => total + (a.bytes ?? 0), 0);
+    const falha = arquivos.find((a) => a.status !== 'ok');
+    this.manifest.finalizarSecao(s, falha
+      ? { status: 'erro', bytes, erro: `${falha.nome}: ${falha.erro}` }
+      : { status: 'completa', bytes });
+  }
+
+  // Primeiro o .vsc (conferido contra o hash do diretório); depois os demais, conferidos pelo sha512 no .vsc.
+  // O .vsc é baixado de novo sempre que o conjunto tem pendências, porque pode já estar só no zip.
+  async #baixarConjunto(s, hash, staging) {
+    const registros = this.manifest.arquivosDaSecao(s).filter((a) => a.hash === hash);
+    if (registros.every((a) => a.status === 'ok')) return;
+    const pasta = path.join(staging, s.zona, s.secao, hash);
+
+    const regVsc = registros.find((a) => a.nome.endsWith('.vsc'));
+    let vsc = null;
+    if (regVsc) {
+      vsc = await this.#baixarArquivo(s, regVsc, pasta, (buf) => (vscConfereComDiretorio(buf, hash)
+        ? { verificacao: 'dir' }
+        : { erro: 'sha256 do .vsc não confere com o hash do diretório' }));
+    }
+
+    for (const reg of registros) {
+      if (reg === regVsc || reg.status === 'ok') continue;
+      if (regVsc && !vsc) {
+        this.manifest.marcarArquivo(s, reg.hash, reg.nome, { status: 'erro', erro: '.vsc inválido; arquivo não baixado' });
+        continue;
+      }
+      await this.#baixarArquivo(s, reg, pasta, (buf) => {
+        if (vsc && vscContemSha512(vsc, buf)) return { verificacao: 'vsc' };
+        if (vsc && TIPOS_NO_VSC.has(reg.tipo)) return { erro: 'sha512 não consta no .vsc' };
+        return { verificacao: 'md5' };
+      });
+    }
+  }
+
+  // Devolve o conteúdo verificado, ou null depois de registrar o erro.
+  // Conteúdo que não confere é baixado de novo até TENTATIVAS_VERIFICACAO vezes.
+  async #baixarArquivo(s, reg, pasta, verificar) {
+    let erro;
+    for (let tentativa = 1; tentativa <= TENTATIVAS_VERIFICACAO; tentativa++) {
+      let r;
+      try {
+        r = await this.http.get(reg.url);
+      } catch (err) {
+        erro = err.message;
+        break;
+      }
+      if (r.status !== 200) {
+        erro = `HTTP ${r.status}`;
+        break;
+      }
+      const md5Real = md5(r.body);
+      const md5Servidor = md5DoEtag(r.etag);
+      if (md5Servidor && md5Servidor !== md5Real) {
+        erro = 'md5 não confere com o ETag';
+        continue;
+      }
+      const v = verificar(r.body);
+      if (v.erro) {
+        erro = v.erro;
+        continue;
+      }
+      await gravarAtomico(path.join(pasta, reg.nome), r.body);
+      this.manifest.marcarArquivo(s, reg.hash, reg.nome, {
+        status: 'ok', bytes: r.body.length, md5: md5Real, sha512: sha512Hex(r.body), verificacao: v.verificacao,
+      });
+      this.#contarBytes(r.body.length);
+      return r.body;
+    }
+    this.manifest.marcarArquivo(s, reg.hash, reg.nome, { status: 'erro', erro });
+    return null;
+  }
+
+  #contarBytes(n) {
+    this.#amostras.push([this.agora(), n]);
+    this.#podarAmostras();
+  }
+
+  #podarAmostras() {
+    const limite = this.agora() - JANELA_VELOCIDADE_MS;
+    while (this.#amostras.length && this.#amostras[0][0] < limite) this.#amostras.shift();
+  }
+
+  // Média de bytes por segundo no último minuto.
+  velocidadeBps() {
+    this.#podarAmostras();
+    return this.#amostras.reduce((total, [, n]) => total + n, 0) / (JANELA_VELOCIDADE_MS / 1000);
+  }
+
   aguardar() {
     return this.#execucao ?? Promise.resolve();
   }

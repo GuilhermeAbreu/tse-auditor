@@ -58,3 +58,90 @@ test('planejar registra aviso quando a UF não tem config no pleito', async (t) 
   assert.match(manifest.eventos(1)[0].msg, /ZZ \(HTTP 404\)/);
   assert.equal(manifest.eventos(1)[0].nivel, 'aviso');
 });
+
+const nomeArquivo = (pleito, sufixo) => `o0${pleito}ac0106600040077-${sufixo}`;
+const requisicoesDe = (fake, sufixo) => fake.requisicoes.filter((r) => r.endsWith(sufixo));
+
+test('processarSecao baixa e verifica todos os arquivos', async (t) => {
+  const { dados, manifest, coletor } = await montar(t);
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+
+  const secao = manifest.secao(S77);
+  assert.equal(secao.status, 'completa');
+  const arquivos = manifest.arquivosDaSecao(S77);
+  assert.deepEqual(
+    arquivos.map((a) => [a.tipo, a.status, a.verificacao]).sort(),
+    [['bu', 'ok', 'vsc'], ['log', 'ok', 'vsc'], ['rdv', 'ok', 'vsc'], ['vota', 'ok', 'dir']],
+  );
+  assert.equal(secao.bytes, arquivos.reduce((t, a) => t + a.bytes, 0));
+
+  const staging = path.join(dados, 'staging/AC/3220/01066/0004/0077');
+  assert.deepEqual(
+    await readFile(path.join(staging, FX.hash3220, nomeArquivo('3220', 'bu.dat'))),
+    await lerFixture(`${FX.dirSecao('3220')}/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`),
+  );
+  await access(path.join(staging, 'p003220-ac-m01066-z0004-s0077-aux.json'));
+  assert.ok(coletor.velocidadeBps() > 0);
+});
+
+test('seção sem índice no servidor fica com erro', async (t) => {
+  const { manifest, coletor } = await montar(t);
+  await coletor.planejar();
+  await coletor.processarSecao(FX.secao('3220', '0078'));
+  const secao = manifest.secao(FX.secao('3220', '0078'));
+  assert.equal(secao.status, 'erro');
+  assert.equal(secao.erro, 'índice: HTTP 404');
+});
+
+test('seção sem arquivos fica como sem_arquivos', async (t) => {
+  const { manifest, coletor } = await montar(t);
+  await coletor.planejar();
+  await coletor.processarSecao(FX.secao('3220', '0079'));
+  assert.equal(manifest.secao(FX.secao('3220', '0079')).status, 'sem_arquivos');
+});
+
+test('arquivo corrompido em trânsito é baixado de novo', async (t) => {
+  const { fake, manifest, coletor } = await montar(t, { falhas: { [nomeArquivo('3220', 'bu.dat')]: ['corromper'] } });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 2);
+});
+
+test('corrupção persistente marca o arquivo e a seção com erro', async (t) => {
+  const falhas = { [nomeArquivo('3220', 'bu.dat')]: ['corromper', 'corromper', 'corromper'] };
+  const { fake, manifest, coletor } = await montar(t, { falhas });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  const bu = manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'bu');
+  assert.equal(bu.status, 'erro');
+  assert.equal(bu.erro, 'md5 não confere com o ETag');
+  assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 3);
+  const secao = manifest.secao(S77);
+  assert.equal(secao.status, 'erro');
+  assert.equal(secao.erro, `${nomeArquivo('3220', 'bu.dat')}: md5 não confere com o ETag`);
+});
+
+test('bu cujo sha512 não consta no .vsc é rejeitado', async (t) => {
+  const falhas = { [nomeArquivo('3220', 'bu.dat')]: ['corromperComEtag', 'corromperComEtag', 'corromperComEtag'] };
+  const { manifest, coletor } = await montar(t, { falhas });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  const bu = manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'bu');
+  assert.equal(bu.status, 'erro');
+  assert.equal(bu.erro, 'sha512 não consta no .vsc');
+});
+
+test('.vsc que não confere com o hash do diretório invalida o conjunto', async (t) => {
+  const falhas = { [nomeArquivo('3220', 'vota.vsc')]: ['corromperComEtag', 'corromperComEtag', 'corromperComEtag'] };
+  const { fake, manifest, coletor } = await montar(t, { falhas });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  const porTipo = Object.fromEntries(manifest.arquivosDaSecao(S77).map((a) => [a.tipo, a]));
+  assert.equal(porTipo.vota.erro, 'sha256 do .vsc não confere com o hash do diretório');
+  assert.equal(porTipo.bu.status, 'erro');
+  assert.equal(porTipo.bu.erro, '.vsc inválido; arquivo não baixado');
+  assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 0);
+  assert.equal(manifest.secao(S77).status, 'erro');
+});
