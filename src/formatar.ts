@@ -1,4 +1,6 @@
-export function fmtBytes(b) {
+import type { EstadoPainel } from './tipos/dominio.ts';
+
+export function fmtBytes(b: number | null | undefined): string {
   if (b == null) return '—';
   const unidades = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
@@ -9,7 +11,7 @@ export function fmtBytes(b) {
   return `${b.toFixed(i ? 1 : 0)} ${unidades[i]}`;
 }
 
-export function linhaDeProgresso(e) {
+export function linhaDeProgresso(e: EstadoPainel): string {
   const { secoes, concluidas, erros, bytes } = e.totais;
   const pct = secoes ? (((concluidas + erros) / secoes) * 100).toFixed(1) : '0.0';
   const onde = e.coleta.ufAtual ? ` | ${e.coleta.ufAtual.toUpperCase()} ${e.coleta.municipioAtual ?? ''}` : '';

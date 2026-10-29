@@ -20,13 +20,13 @@ export const PADRAO = {
   intervaloPainelMs: 2000,
 };
 
-export function anoDoCiclo(ciclo) {
+export function anoDoCiclo(ciclo: string): string {
   const m = /^ele(\d{4})$/.exec(ciclo);
   if (!m) throw new Error(`ciclo inesperado: ${ciclo}`);
-  return m[1];
+  return m[1]!;
 }
 
 // Tudo do projeto fica em <HD>/tse<ano>/; o resto do disco não é tocado.
-export function pastaDados(hd, ciclo) {
+export function pastaDados(hd: string, ciclo: string): string {
   return path.join(hd, `tse${anoDoCiclo(ciclo)}`);
 }

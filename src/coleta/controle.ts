@@ -10,19 +10,45 @@ import { bytesLivres as bytesLivresDoDisco, garantirVolume } from '../storage/di
 import { Coletor } from './coletor.ts';
 import { montarEstado } from './estado.ts';
 import { LIMITES, normalizarOpcoes, padroes } from './opcoes.ts';
+import type { OpcoesHttpClient } from '../net/http.ts';
+import type { OpcoesColetor } from './coletor.ts';
+import type { ClienteHttp, ConfigEntrada, Configuracao, Eleicoes, EstadoPainel, Opcoes } from '../tipos/dominio.ts';
+
+export interface OpcoesControle {
+  eleicoes: Eleicoes;
+  hd?: string;
+  base: string;
+  ambiente: string;
+  dadosFixo?: string;
+  arquivoConfig?: string;
+  criarHttp?: (opcoes: OpcoesHttpClient) => ClienteHttp;
+  criarColetor?: (opcoes: OpcoesColetor) => Coletor;
+  bytesLivres?: (pasta: string) => Promise<number>;
+}
+
+export type ConfiguracaoComDados = Configuracao & { dados: string | null };
 
 const GB = 1024 ** 3;
-const dataIso = (dt) => dt.split('/').reverse().join('-'); // dd/mm/aaaa → aaaa-mm-dd
+const dataIso = (dt: string) => dt.split('/').reverse().join('-'); // dd/mm/aaaa → aaaa-mm-dd
 
 // Dono da configuração da coleta e dos objetos vivos: manifest, cliente HTTP e coletor.
 // Aplicar uma configuração nova para o coletor atual, reabre o manifest se a pasta ou o
 // intervalo de gravação mudou e monta um coletor novo; o que já foi baixado continua no manifest.
 export class ControleColeta {
-  #config = null;
-  #coletor = null;
-  #manifest = null;
-  #dados = null;
-  #fila = Promise.resolve();
+  #config: Configuracao | null = null;
+  #coletor: Coletor | null = null;
+  #manifest: Manifest | null = null;
+  #dados: string | null = null;
+  declare eleicoes: Eleicoes;
+  declare base: string;
+  declare ambiente: string;
+  declare dadosFixo: string | undefined;
+  declare arquivoConfig: string;
+  declare criarHttp: (opcoes: OpcoesHttpClient) => ClienteHttp;
+  declare criarColetor: (opcoes: OpcoesColetor) => Coletor;
+  declare bytesLivres: (pasta: string) => Promise<number>;
+  padroes: Opcoes;
+  #fila: Promise<unknown> = Promise.resolve();
 
   constructor({
     eleicoes, hd = PADRAO.hd, base, ambiente, dadosFixo,
@@ -30,24 +56,24 @@ export class ControleColeta {
     criarHttp = (opcoes) => new HttpClient(opcoes),
     criarColetor = (opcoes) => new Coletor(opcoes),
     bytesLivres = bytesLivresDoDisco,
-  }) {
+  }: OpcoesControle) {
     Object.assign(this, { eleicoes, base, ambiente, dadosFixo, arquivoConfig, criarHttp, criarColetor, bytesLivres });
     this.padroes = padroes({ hd });
   }
 
-  get coletor() {
+  get coletor(): Coletor | null {
     return this.#coletor;
   }
 
-  get manifest() {
+  get manifest(): Manifest | null {
     return this.#manifest;
   }
 
-  configuracao() {
+  configuracao(): ConfiguracaoComDados | null {
     return this.#config ? structuredClone({ ...this.#config, dados: this.#dados }) : null;
   }
 
-  intervaloPainelMs() {
+  intervaloPainelMs(): number {
     return (this.#config ?? this.padroes).intervaloPainelMs;
   }
 
@@ -74,9 +100,9 @@ export class ControleColeta {
 
   // Completa a entrada com a configuração atual (ou os padrões) e valida.
   // Lança Error com mensagem em português se algo não serve.
-  validar(entrada = {}) {
-    const e = entrada ?? {};
-    const anterior = this.#config ?? { ...this.padroes, pleitos: undefined, ufs: UFS };
+  validar(entrada: ConfigEntrada | null = {}): Configuracao {
+    const e: ConfigEntrada = entrada ?? {};
+    const anterior: Opcoes & { pleitos?: string[]; ufs: string[] } = this.#config ?? { ...this.padroes, pleitos: undefined, ufs: UFS };
     const pleitos = e.pleitos ?? anterior.pleitos;
     const ufs = e.ufs ?? anterior.ufs;
     if (!Array.isArray(pleitos) || pleitos.length === 0) throw new Error('escolha ao menos um pleito');
@@ -94,18 +120,18 @@ export class ControleColeta {
       pleitos: escolhidos.map((p) => p.cd),
       ufs: UFS.filter((u) => normalizadas.includes(u)), // ordem de coleta
       ...normalizarOpcoes(e, anterior),
-      ciclo: ciclos[0],
+      ciclo: ciclos[0]!,
     };
   }
 
   // Aplica uma configuração nova. Uma por vez: chamadas simultâneas entram na fila.
-  aplicar(config, opcoes = {}) {
+  aplicar(config: ConfigEntrada, opcoes: { iniciar?: boolean; salvar?: boolean } = {}): Promise<ConfiguracaoComDados | null> {
     const vez = this.#fila.then(() => this.#aplicar(config, opcoes));
     this.#fila = vez.catch(() => {});
     return vez;
   }
 
-  async #aplicar(config, { iniciar = false, salvar = true }) {
+  async #aplicar(config: ConfigEntrada, { iniciar = false, salvar = true }: { iniciar?: boolean; salvar?: boolean }): Promise<ConfiguracaoComDados | null> {
     const nova = this.validar(config);
     const dados = this.dadosFixo ?? pastaDados(nova.hd, nova.ciclo);
     const outraPasta = dados !== this.#dados;
@@ -128,10 +154,11 @@ export class ControleColeta {
         manifest = abrir();
       } catch (err) {
         this.#esquecer();
-        throw new Error(`não foi possível reabrir o manifest: ${err.message}`);
+        throw new Error(`não foi possível reabrir o manifest: ${(err as Error).message}`);
       }
     }
 
+    if (!manifest) throw new Error('manifest não aberto');
     this.#manifest = manifest;
     this.#dados = dados;
     this.#config = nova;
@@ -156,7 +183,7 @@ export class ControleColeta {
         await salvarConfig(this.arquivoConfig, salvavel);
       } catch (err) {
         try {
-          manifest.registrarEvento('aviso', null, `não foi possível salvar a configuração em ${this.arquivoConfig}: ${err.message}`);
+          manifest.registrarEvento('aviso', null, `não foi possível salvar a configuração em ${this.arquivoConfig}: ${(err as Error).message}`);
         } catch {
           // manifest com erro de gravação: o painel já mostra
         }
@@ -184,12 +211,12 @@ export class ControleColeta {
     try {
       this.#manifest.fechar();
     } catch (err) {
-      console.error(`erro ao fechar o manifest: ${err.message}`);
+      console.error(`erro ao fechar o manifest: ${(err as Error).message}`);
     }
     this.#manifest = null;
   }
 
-  async obterEstado() {
+  async obterEstado(): Promise<EstadoPainel> {
     const configuracao = this.configuracao();
     if (!configuracao) {
       return {
@@ -205,9 +232,9 @@ export class ControleColeta {
       };
     }
     const estado = await montarEstado({
-      manifest: this.#manifest,
-      coletor: this.#coletor,
-      pastaDados: this.#dados,
+      manifest: this.#manifest!,
+      coletor: this.#coletor!,
+      pastaDados: this.#dados!,
       bytesLivres: this.bytesLivres,
       ufs: configuracao.ufs,
     });

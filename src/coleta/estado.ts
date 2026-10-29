@@ -1,6 +1,10 @@
 // Status de coleta da UF. Os status das etapas seguintes (verificando, extraído, analisado)
 // entram com os planos de verificação e análise.
-export function statusDaUf(u, coleta) {
+import type { EstadoColeta, EstadoPainel, StatusUf, UfResumo } from '../tipos/dominio.ts';
+import type { Manifest } from '../storage/manifest.ts';
+import type { Coletor } from './coletor.ts';
+
+export function statusDaUf(u: UfResumo, coleta: EstadoColeta): StatusUf {
   const nela = coleta.rodando && coleta.ufAtual === u.uf;
   if (nela && u.pausada) return 'pausando';
   if (nela) return 'baixando';
@@ -13,10 +17,20 @@ export function statusDaUf(u, coleta) {
 // Seções agregadas não contam no total (não têm arquivos próprios); "sem arquivos" conta como
 // concluída para o progresso, mas aparece separada, nunca como "ok".
 // `ufs` (opcional) limita o estado às UFs da configuração atual; o manifest pode ter outras.
-export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres, ufs: filtro }) {
+export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres, ufs: filtro }: {
+  manifest: Manifest;
+  coletor: Coletor;
+  pastaDados: string;
+  bytesLivres: (pasta: string) => Promise<number>;
+  ufs?: string[];
+}): Promise<EstadoPainel> {
   const coleta = { ...coletor.estado, velocidadeBps: coletor.velocidadeBps() };
-  let ufsManifest, resumo, errosSecoes, eventos, manifestErro;
-  let falha = null;
+  let ufsManifest: ReturnType<Manifest['ufs']> = [];
+  let resumo: ReturnType<Manifest['resumoPorUf']> = [];
+  let errosSecoes: ReturnType<Manifest['errosRecentes']> = [];
+  let eventos: ReturnType<Manifest['eventos']> = [];
+  let manifestErro: string | null = null;
+  let falha: Error | null = null;
   try {
     ufsManifest = manifest.ufs();
     resumo = manifest.resumoPorUf();
@@ -24,10 +38,10 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
     eventos = manifest.eventos(20);
     manifestErro = manifest.erro?.message ?? null;
   } catch (err) {
-    falha = err;
+    falha = err as Error;
   }
 
-  let livres = null;
+  let livres: number | null = null;
   try {
     livres = await bytesLivres(pastaDados);
   } catch {
@@ -48,7 +62,7 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
   }
 
   if (filtro) ufsManifest = ufsManifest.filter((u) => filtro.includes(u.uf));
-  const porUf = new Map(ufsManifest.map((u) => [u.uf, {
+  const porUf = new Map<string, UfResumo>(ufsManifest.map((u) => [u.uf, {
     uf: u.uf, pausada: u.pausada === 1, total: 0, concluidas: 0, erros: 0, semArquivos: 0, agregadas: 0, bytes: 0,
   }]));
   for (const { uf, status, n, bytes } of resumo) {
@@ -66,7 +80,7 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
   }
 
   const ufs = [...porUf.values()].map((u) => ({ ...u, status: statusDaUf(u, coleta) }));
-  const soma = (campo) => ufs.reduce((total, u) => total + u[campo], 0);
+  const soma = (campo: keyof Omit<UfResumo, 'uf' | 'pausada'>) => ufs.reduce((total, u) => total + u[campo], 0);
   const totais = {
     secoes: soma('total'), concluidas: soma('concluidas'), erros: soma('erros'), semArquivos: soma('semArquivos'), bytes: soma('bytes'),
   };

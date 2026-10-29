@@ -5,14 +5,40 @@ import yauzl from 'yauzl';
 import { promisify } from 'node:util';
 import { buffer as lerStream } from 'node:stream/consumers';
 
-const deBuffer = promisify(yauzl.fromBuffer);
+import type { Readable } from 'node:stream';
 
-export async function lerLogJez(buf) {
+const deBuffer = promisify(yauzl.fromBuffer) as (buf: Buffer, opcoes: yauzl.Options) => Promise<yauzl.ZipFile>;
+
+export interface EventoLog {
+  ts: string;
+  nivel: string | undefined;
+  urna: string | undefined;
+  modulo: string | undefined;
+  mensagem: string;
+  hash: string | undefined;
+}
+
+export interface ResumoLog {
+  logDia: string | null;
+  logVotosComputados: number;
+  logHabilitados: number;
+  logHabBiometrica: number;
+  logHabMesario: number;
+  logHabAnoNascimento: number;
+  logMsgMesarioHabilitou: number;
+  logTentativasDigital: number;
+  logPrimeiroVoto: string | null;
+  logUltimoVoto: string | null;
+  logVotosPorHora: string;
+  logUrnas: string;
+}
+
+export async function lerLogJez(buf: Buffer): Promise<string> {
   const zip = await deBuffer(buf, { lazyEntries: true });
-  const abrir = promisify(zip.openReadStream.bind(zip));
+  const abrir = promisify(zip.openReadStream.bind(zip)) as (e: yauzl.Entry) => Promise<Readable>;
   try {
-    return await new Promise((ok, falha) => {
-      zip.on('entry', async (e) => {
+    return await new Promise<string>((ok, falha) => {
+      zip.on('entry', async (e: yauzl.Entry) => {
         if (e.fileName !== 'logd.dat') return zip.readEntry();
         try {
           ok((await lerStream(await abrir(e))).toString('latin1'));
@@ -31,14 +57,14 @@ export async function lerLogJez(buf) {
 
 const RE_DATA = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}:\d{2}:\d{2})$/;
 
-export function parsearLog(textoLog) {
-  const eventos = [];
+export function parsearLog(textoLog: string): { eventos: EventoLog[]; linhasInvalidas: number } {
+  const eventos: EventoLog[] = [];
   let linhasInvalidas = 0;
   for (const linha of textoLog.split('\n')) {
     const l = linha.replace(/\r$/, '');
     if (!l) continue;
     const c = l.split('\t');
-    const m = RE_DATA.exec(c[0]);
+    const m = RE_DATA.exec(c[0]!);
     if (c.length < 6 || !m) {
       linhasInvalidas++;
       continue;
@@ -52,7 +78,7 @@ export function parsearLog(textoLog) {
 }
 
 // Classificação determinística das mensagens ligadas ao voto e à habilitação do eleitor.
-const REGRAS = [
+const REGRAS: [string, RegExp][] = [
   ['voto_computado', /^O voto do eleitor foi computado/],
   ['voto_cargo', /^Voto confirmado para \[/],
   ['eleitor_habilitado', /^Eleitor foi habilitado/],
@@ -70,7 +96,7 @@ const REGRAS = [
   ['eleitor_suspenso', /^Mesário digitou o título para suspender o eleitor/],
 ];
 
-export function tipoEvento(mensagem) {
+export function tipoEvento(mensagem: string): string | null {
   for (const [tipo, re] of REGRAS) if (re.test(mensagem)) return tipo;
   return null;
 }
@@ -83,12 +109,12 @@ export function tipoEvento(mensagem) {
 // ou nenhuma -> mesário. O tipo só conta quando o voto é computado (habilitações canceladas ou de
 // eleitor que desistiu ficam fora). A contagem crua de mensagens não fecha com o BU: nem toda
 // habilitação por mesário gera "Mesário N habilitou" e há habilitações sem voto.
-const TIPO_HAB = {
+const TIPO_HAB: Record<string, 'Biometrica' | 'AnoNascimento' | 'Mesario'> = {
   hab_biometrica: 'Biometrica', hab_ano_nascimento: 'AnoNascimento', hab_mesario: 'Mesario', hab_mesario_nao_associado: 'Mesario',
 };
 
-export function resumirLog(eventos, diaEleicao = null) {
-  const porDia = new Map();
+export function resumirLog(eventos: EventoLog[], diaEleicao: string | null = null): ResumoLog {
+  const porDia = new Map<string, number>();
   for (const e of eventos) {
     if (e.modulo === 'VOTA' && tipoEvento(e.mensagem) === 'voto_computado') {
       const d = e.ts.slice(0, 10);
@@ -96,20 +122,20 @@ export function resumirLog(eventos, diaEleicao = null) {
     }
   }
   const dia = diaEleicao ?? [...porDia].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-  const r = {
+  const r: ResumoLog = {
     logDia: dia, logVotosComputados: 0, logHabilitados: 0, logHabBiometrica: 0, logHabMesario: 0,
     logHabAnoNascimento: 0, logMsgMesarioHabilitou: 0, logTentativasDigital: 0, logPrimeiroVoto: null, logUltimoVoto: null,
     logVotosPorHora: '{}', logUrnas: '',
   };
   if (!dia) return r;
-  const porHora = {};
-  const urnas = new Set();
-  let tipoVisto = null;
-  let habilitacao = null;
+  const porHora: Record<string, number> = {};
+  const urnas = new Set<string | undefined>();
+  let tipoVisto: string | null = null;
+  let habilitacao: string | null = null;
   for (const e of eventos) {
     if (e.modulo !== 'VOTA' || !e.ts.startsWith(dia)) continue;
     const t = tipoEvento(e.mensagem);
-    if (TIPO_HAB[t]) tipoVisto = TIPO_HAB[t];
+    if (t && TIPO_HAB[t]) tipoVisto = TIPO_HAB[t];
     if (t === 'hab_mesario') r.logMsgMesarioHabilitou++;
     if (t === 'eleitor_habilitado') {
       r.logHabilitados++;
@@ -117,7 +143,7 @@ export function resumirLog(eventos, diaEleicao = null) {
       tipoVisto = null;
     } else if (t === 'voto_computado') {
       r.logVotosComputados++;
-      r[`logHab${habilitacao ?? 'Mesario'}`]++;
+      r[`logHab${(habilitacao ?? 'Mesario') as 'Biometrica' | 'AnoNascimento' | 'Mesario'}`]++;
       habilitacao = null;
       r.logPrimeiroVoto ??= e.ts;
       r.logUltimoVoto = e.ts;

@@ -1,9 +1,12 @@
 import { achados, filtroUF, linhas, temDoisTurnos, zRobusto } from './comum.ts';
+import type { DuckDBConnection } from '@duckdb/node-api';
+import type { ParamsCruzamento } from './comum.ts';
+import type { Linha } from '../tipos/dominio.ts';
 
 export const id = 'turnos';
 export const descricao = 'Presidente 1º × 2º turno por seção: ganho de cada finalista × votos disponíveis; variação atípica na zona.';
 
-export async function executar(db, { uf, turnos }) {
+export async function executar(db: DuckDBConnection, { uf, turnos }: ParamsCruzamento): Promise<Linha[]> {
   if (!temDoisTurnos(turnos)) return [];
   const { primeiro: PRIMEIRO, segundo: SEGUNDO } = turnos;
   return linhas(db, achados(`

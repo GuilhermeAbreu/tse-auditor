@@ -1,5 +1,22 @@
 import Database from 'better-sqlite3';
 import { UFS } from '../ufs.ts';
+import type { Conjunto, ErroSecao, Evento, MunicipioConfig, SecaoChave } from '../tipos/dominio.ts';
+
+export interface UfLinha { uf: string; ordem: number; pausada: number }
+export interface MunicipioLinha { pleito: string; uf: string; mun: string; nome: string; empacotado_em: string | null; zip_bytes: number | null }
+export interface SecaoLinha extends SecaoChave {
+  principal: string | null; status: string; bytes: number; erro: string | null; atualizado_em: string | null;
+}
+export interface ArquivoLinha extends SecaoChave {
+  hash: string; nome: string; tipo: string | null; url: string; status: string;
+  bytes: number | null; md5: string | null; sha512: string | null; verificacao: string | null;
+  tentativas: number; erro: string | null; baixado_em: string | null;
+}
+export type ArquivoOkLinha = Pick<ArquivoLinha, 'zona' | 'secao' | 'hash' | 'nome' | 'bytes' | 'sha512'>;
+export interface ResumoLinha { uf: string; status: string; n: number; bytes: number }
+export interface MarcaArquivo {
+  status: string; bytes?: number | null; md5?: string | null; sha512?: string | null; verificacao?: string | null; erro?: string | null;
+}
 
 const ESQUEMA = `
 CREATE TABLE IF NOT EXISTS ufs (
@@ -54,7 +71,7 @@ CREATE TABLE IF NOT EXISTS eventos (
 `;
 
 const ONDE_SECAO = 'pleito = @pleito AND uf = @uf AND mun = @mun AND zona = @zona AND secao = @secao';
-const chave = (s) => ({ pleito: s.pleito, uf: s.uf, mun: s.mun, zona: s.zona, secao: s.secao });
+const chave = (s: SecaoChave): SecaoChave => ({ pleito: s.pleito, uf: s.uf, mun: s.mun, zona: s.zona, secao: s.secao });
 const agora = () => new Date().toISOString();
 
 const LIMITE_GRAVACOES = 500;
@@ -66,22 +83,23 @@ const LIMITE_GRAVACOES = 500;
 // pois o download é refeito. Leituras usam a mesma conexão e enxergam o que ainda não foi
 // confirmado. Erro no commit por timer é guardado e lançado na próxima chamada pública.
 export class Manifest {
-  #st;
-  #timer = null;
-  #resumo = null;
+  #st: Record<string, Database.Statement>;
+  #timer: NodeJS.Timeout | null = null;
+  #resumo: { ts: number; linhas: ResumoLinha[] } | null = null;
   #gravacoes = 0;
-  #erroPendente = null;
-  #intervaloCommitMs;
-  #cacheResumoMs;
+  #erroPendente: unknown = null;
+  #intervaloCommitMs: number;
+  #cacheResumoMs: number;
+  db: Database.Database;
 
-  constructor(caminho, { intervaloCommitMs = 1000, cacheResumoMs = 5000 } = {}) {
+  constructor(caminho: string, { intervaloCommitMs = 1000, cacheResumoMs = 5000 }: { intervaloCommitMs?: number; cacheResumoMs?: number } = {}) {
     this.#intervaloCommitMs = intervaloCommitMs;
     this.#cacheResumoMs = cacheResumoMs;
     this.db = new Database(caminho);
     this.db.pragma('journal_mode = TRUNCATE');
     this.db.pragma('synchronous = NORMAL');
     this.db.exec(ESQUEMA);
-    const p = (sql) => this.db.prepare(sql);
+    const p = (sql: string) => this.db.prepare(sql);
     this.#st = {
       inserirUf: p('INSERT OR IGNORE INTO ufs (uf, ordem) VALUES (?, ?)'),
       ufs: p('SELECT uf, ordem, pausada FROM ufs ORDER BY ordem'),
@@ -127,21 +145,21 @@ export class Manifest {
       // Com erro de commit guardado, o rollback acontece ao fechar.
       if (!this.#erroPendente) this.descarregar();
     } finally {
-      clearTimeout(this.#timer);
+      clearTimeout(this.#timer ?? undefined);
       this.#timer = null;
       if (this.db.open) this.db.close();
     }
   }
 
   // Erro de commit guardado: só some reabrindo o Manifest depois que o disco voltar.
-  get erro() {
-    return this.#erroPendente ?? null;
+  get erro(): Error | null {
+    return (this.#erroPendente as Error | null) ?? null;
   }
 
   // Confirma a transação aberta, se houver.
-  descarregar() {
+  descarregar(): void {
     this.#verificarErro();
-    clearTimeout(this.#timer);
+    clearTimeout(this.#timer ?? undefined);
     this.#timer = null;
     if (!this.db.open || !this.db.inTransaction) return;
     try {
@@ -181,37 +199,37 @@ export class Manifest {
     if (++this.#gravacoes >= LIMITE_GRAVACOES) this.descarregar();
   }
 
-  registrarUfs(ufs) {
+  registrarUfs(ufs: string[]): void {
     this.#abrirTransacao();
     this.db.transaction(() => {
-      for (const uf of ufs) this.#st.inserirUf.run(uf, UFS.indexOf(uf));
+      for (const uf of ufs) this.#st.inserirUf!.run(uf, UFS.indexOf(uf));
     })();
     this.#contar();
   }
 
-  ufs() {
-    return this.#st.ufs.all();
+  ufs(): UfLinha[] {
+    return this.#st.ufs!.all() as UfLinha[];
   }
 
-  definirPausa(uf, pausada) {
+  definirPausa(uf: string, pausada: boolean): void {
     this.#abrirTransacao();
-    this.#st.definirPausa.run(pausada ? 1 : 0, uf);
+    this.#st.definirPausa!.run(pausada ? 1 : 0, uf);
     this.#contar();
   }
 
-  ufPausada(uf) {
-    return this.#st.ufPausada.get(uf)?.pausada === 1;
+  ufPausada(uf: string): boolean {
+    return (this.#st.ufPausada!.get(uf) as { pausada: number } | undefined)?.pausada === 1;
   }
 
-  registrarConfig(pleito, uf, municipios) {
+  registrarConfig(pleito: string, uf: string, municipios: MunicipioConfig[]): void {
     this.#abrirTransacao();
     this.#resumo = null;
     this.db.transaction(() => {
       const ts = agora();
       for (const m of municipios) {
-        this.#st.inserirMunicipio.run({ pleito, uf, mun: m.mun, nome: m.nome });
+        this.#st.inserirMunicipio!.run({ pleito, uf, mun: m.mun, nome: m.nome });
         for (const s of m.secoes) {
-          this.#st.inserirSecao.run({
+          this.#st.inserirSecao!.run({
             pleito, uf, mun: m.mun, zona: s.zona, secao: s.secao,
             principal: s.principal,
             status: s.principal ? 'agregada' : 'pendente',
@@ -223,101 +241,101 @@ export class Manifest {
     this.#contar();
   }
 
-  municipiosDaUf(uf) {
-    return this.#st.municipiosDaUf.all(uf);
+  municipiosDaUf(uf: string): { mun: string; nome: string }[] {
+    return this.#st.municipiosDaUf!.all(uf) as { mun: string; nome: string }[];
   }
 
-  municipio(pleito, uf, mun) {
-    return this.#st.municipio.get(pleito, uf, mun);
+  municipio(pleito: string, uf: string, mun: string): MunicipioLinha | undefined {
+    return this.#st.municipio!.get(pleito, uf, mun) as MunicipioLinha | undefined;
   }
 
-  secoesPendentes(pleito, uf, mun) {
-    return this.#st.secoesPendentes.all(pleito, uf, mun);
+  secoesPendentes(pleito: string, uf: string, mun: string): SecaoChave[] {
+    return this.#st.secoesPendentes!.all(pleito, uf, mun) as SecaoChave[];
   }
 
-  secao(s) {
-    return this.#st.secao.get(chave(s));
+  secao(s: SecaoChave): SecaoLinha | undefined {
+    return this.#st.secao!.get(chave(s)) as SecaoLinha | undefined;
   }
 
-  registrarIndice(s, conjuntos, urlDe) {
+  registrarIndice(s: SecaoChave, conjuntos: Conjunto[], urlDe: (hash: string, nome: string) => string): void {
     this.#abrirTransacao();
     this.db.transaction(() => {
       for (const c of conjuntos) {
-        this.#st.inserirConjunto.run({ ...chave(s), hash: c.hash, status: c.status, data: c.data, hora: c.hora });
+        this.#st.inserirConjunto!.run({ ...chave(s), hash: c.hash, status: c.status, data: c.data, hora: c.hora });
         for (const a of c.arquivos) {
-          this.#st.inserirArquivo.run({ ...chave(s), hash: c.hash, nome: a.nome, tipo: a.tipo, url: urlDe(c.hash, a.nome) });
+          this.#st.inserirArquivo!.run({ ...chave(s), hash: c.hash, nome: a.nome, tipo: a.tipo, url: urlDe(c.hash, a.nome) });
         }
       }
     })();
     this.#contar();
   }
 
-  arquivosDaSecao(s) {
-    return this.#st.arquivosDaSecao.all(chave(s));
+  arquivosDaSecao(s: SecaoChave): ArquivoLinha[] {
+    return this.#st.arquivosDaSecao!.all(chave(s)) as ArquivoLinha[];
   }
 
-  marcarArquivo(s, hash, nome, { status, bytes = null, md5 = null, sha512 = null, verificacao = null, erro = null }) {
+  marcarArquivo(s: SecaoChave, hash: string, nome: string, { status, bytes = null, md5 = null, sha512 = null, verificacao = null, erro = null }: MarcaArquivo): void {
     this.#abrirTransacao();
-    this.#st.marcarArquivo.run({ ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
+    this.#st.marcarArquivo!.run({ ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
     this.#contar();
   }
 
-  arquivo(s, hash, nome) {
-    return this.#st.arquivo.get({ ...chave(s), hash, nome });
+  arquivo(s: SecaoChave, hash: string, nome: string): ArquivoLinha | undefined {
+    return this.#st.arquivo!.get({ ...chave(s), hash, nome }) as ArquivoLinha | undefined;
   }
 
-  arquivosOkDoMunicipio(pleito, uf, mun) {
-    return this.#st.arquivosOkDoMunicipio.all(pleito, uf, mun);
+  arquivosOkDoMunicipio(pleito: string, uf: string, mun: string): ArquivoOkLinha[] {
+    return this.#st.arquivosOkDoMunicipio!.all(pleito, uf, mun) as ArquivoOkLinha[];
   }
 
   // Arquivo que o manifest dava como ok mas cujo conteúdo no staging não confere.
-  marcarArquivoInconsistente(s, hash, nome, erro) {
+  marcarArquivoInconsistente(s: SecaoChave, hash: string, nome: string, erro: string): void {
     this.marcarArquivo(s, hash, nome, { status: 'erro', erro });
     this.finalizarSecao(s, { status: 'erro', erro: `${nome}: ${erro}` });
   }
 
-  finalizarSecao(s, { status, bytes = 0, erro = null }) {
+  finalizarSecao(s: SecaoChave, { status, bytes = 0, erro = null }: { status: string; bytes?: number; erro?: string | null }): void {
     this.#abrirTransacao();
-    this.#st.finalizarSecao.run({ ...chave(s), status, bytes, erro, agora: agora() });
+    this.#st.finalizarSecao!.run({ ...chave(s), status, bytes, erro, agora: agora() });
     this.#contar();
   }
 
-  marcarEmpacotado(pleito, uf, mun, zipBytes) {
+  marcarEmpacotado(pleito: string, uf: string, mun: string, zipBytes: number): void {
     this.#abrirTransacao();
-    this.#st.marcarEmpacotado.run(agora(), zipBytes, pleito, uf, mun);
+    this.#st.marcarEmpacotado!.run(agora(), zipBytes, pleito, uf, mun);
     this.#contar();
   }
 
-  reabrirMunicipio(pleito, uf, mun) {
+  reabrirMunicipio(pleito: string, uf: string, mun: string): void {
     this.#abrirTransacao();
     this.#resumo = null;
     this.db.transaction(() => {
-      this.#st.reabrirSecoes.run(pleito, uf, mun);
-      this.#st.reabrirArquivos.run(pleito, uf, mun);
-      this.#st.reabrirMunicipio.run(pleito, uf, mun);
+      this.#st.reabrirSecoes!.run(pleito, uf, mun);
+      this.#st.reabrirArquivos!.run(pleito, uf, mun);
+      this.#st.reabrirMunicipio!.run(pleito, uf, mun);
     })();
     this.#contar();
   }
 
-  registrarEvento(nivel, uf, msg) {
+  registrarEvento(nivel: string, uf: string | null, msg: string): void {
     this.#abrirTransacao();
-    this.#st.registrarEvento.run(agora(), nivel, uf, msg);
+    this.#st.registrarEvento!.run(agora(), nivel, uf, msg);
     this.#contar();
   }
 
-  eventos(limite) {
-    return this.#st.eventos.all(limite);
+  eventos(limite: number): Evento[] {
+    return this.#st.eventos!.all(limite) as Evento[];
   }
 
-  resumoPorUf() {
+  resumoPorUf(): ResumoLinha[] {
     this.#verificarErro();
     if (this.#resumo && Date.now() - this.#resumo.ts < this.#cacheResumoMs) return this.#resumo.linhas;
-    const linhas = this.#st.resumoPorUf.all().map((r) => ({ ...r, bytes: r.bytes ?? 0 }));
+    const linhas = (this.#st.resumoPorUf!.all() as (Omit<ResumoLinha, 'bytes'> & { bytes: number | null })[]).map((r) => ({ ...r, bytes: r.bytes ?? 0 }));
     this.#resumo = { ts: Date.now(), linhas };
     return linhas;
   }
 
-  errosRecentes(limite) {
-    return this.#st.errosRecentes.all(limite);
+  errosRecentes(limite: number): ErroSecao[] {
+    return this.#st.errosRecentes!.all(limite) as ErroSecao[];
   }
 }

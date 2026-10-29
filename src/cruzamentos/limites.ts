@@ -1,9 +1,12 @@
 import { achados, filtroUF, linhas } from './comum.ts';
+import type { DuckDBConnection } from '@duckdb/node-api';
+import type { ParamsCruzamento } from './comum.ts';
+import type { Linha } from '../tipos/dominio.ts';
 
 export const id = 'limites';
 export const descricao = 'Comparecimento ≤ aptos; total de votos por cargo ≤ comparecimento × votos por eleitor.';
 
-export async function executar(db, { uf }) {
+export async function executar(db: DuckDBConnection, { uf }: ParamsCruzamento): Promise<Linha[]> {
   return linhas(db, achados(`
     WITH s AS (SELECT * FROM secoes WHERE status = 'ok' AND comparecimento IS NOT NULL AND ${filtroUF(uf)}),
     t AS (SELECT pleito, mun, zona, secao, codigoCargo, any_value(cargo) cargo, sum(quantidade) total

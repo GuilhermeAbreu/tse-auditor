@@ -10,6 +10,20 @@ import { ControleColeta } from './coleta/controle.ts';
 import { criarPainel } from './painel/server.ts';
 import { extrairUF } from './extracao/extrator.ts';
 import { analisarUF, resumir } from './cruzamentos/index.ts';
+import type { AddressInfo } from 'node:net';
+import type { Eleicoes, Turnos } from './tipos/dominio.ts';
+
+interface OpcoesCli {
+  pleito?: string;
+  uf?: string;
+  dados?: string;
+  concorrencia?: number;
+  porta?: number;
+  turnos?: string;
+  'sem-iniciar'?: boolean;
+}
+
+const mensagem = (err: unknown) => (err as Error).message;
 
 const AJUDA = `uso:
   tse-auditor eleicoes
@@ -22,7 +36,7 @@ const AJUDA = `uso:
 O painel também configura pleitos, UFs e concorrência; a última configuração aplicada fica em
 $XDG_CONFIG_HOME/tse-auditor/config.json (ou TSE_CONFIG) e é usada quando o painel abre sem opções.`;
 
-function listarEleicoes({ pleitos }) {
+function listarEleicoes({ pleitos }: Eleicoes): void {
   for (const p of pleitos) {
     console.log(`${p.cd.padEnd(6)} ${p.ciclo}  ${p.data}`);
     for (const e of p.eleicoes) {
@@ -32,10 +46,10 @@ function listarEleicoes({ pleitos }) {
   }
 }
 
-const lista = (texto) => texto.split(',').map((x) => x.trim()).filter(Boolean);
+const lista = (texto: string) => texto.split(',').map((x) => x.trim()).filter(Boolean);
 
 // Primeiro Ctrl-C: parada ordenada. Segundo: força a saída (fecha o manifest se der).
-function tratarCtrlC(controle, aoParar) {
+function tratarCtrlC(controle: ControleColeta, aoParar: () => void): void {
   let vezes = 0;
   process.on('SIGINT', () => {
     vezes++;
@@ -48,14 +62,14 @@ function tratarCtrlC(controle, aoParar) {
   });
 }
 
-async function coletar(controle, opcoes) {
+async function coletar(controle: ControleColeta, opcoes: OpcoesCli): Promise<void> {
   if (!opcoes.pleito) throw new Error('informe --pleito (veja "tse-auditor eleicoes")');
   await controle.aplicar({
     pleitos: lista(opcoes.pleito),
     ufs: opcoes.uf ? lista(opcoes.uf) : UFS,
     concorrencia: opcoes.concorrencia ?? PADRAO.concorrencia,
   }, { salvar: false });
-  console.log(`dados em ${controle.configuracao().dados}`);
+  console.log(`dados em ${controle.configuracao()!.dados}`);
   let ativo = true;
   const relogio = setInterval(async () => {
     if (!ativo) return;
@@ -63,11 +77,11 @@ async function coletar(controle, opcoes) {
       const estado = await controle.obterEstado();
       if (ativo) console.log(linhaDeProgresso(estado));
     } catch (err) {
-      console.error(`erro ao ler o progresso: ${err.message}`);
+      console.error(`erro ao ler o progresso: ${mensagem(err)}`);
     }
   }, 10_000);
-  tratarCtrlC(controle, () => controle.coletor.parar());
-  await controle.coletor.executar();
+  tratarCtrlC(controle, () => controle.coletor!.parar());
+  await controle.coletor!.executar();
   ativo = false;
   clearInterval(relogio);
   const estado = await controle.obterEstado();
@@ -80,14 +94,14 @@ async function coletar(controle, opcoes) {
   if (estado.coleta.motivoParada !== 'concluída') process.exitCode = 1;
 }
 
-async function painel(controle, opcoes) {
+async function painel(controle: ControleColeta, opcoes: OpcoesCli): Promise<void> {
   const inicial = configInicial(opcoes, await lerConfigSalva(controle.arquivoConfig));
   if (inicial) {
     try {
       await controle.aplicar(inicial.config, { iniciar: !opcoes['sem-iniciar'] });
     } catch (err) {
       if (inicial.origem === 'linha de comando') throw err;
-      console.error(`configuração salva não aplicada (${err.message}); escolha outra no painel`);
+      console.error(`configuração salva não aplicada (${mensagem(err)}); escolha outra no painel`);
     }
   } else if (opcoes.uf !== undefined || opcoes.concorrencia !== undefined) {
     console.error('sem --pleito nem configuração salva: escolha os pleitos no painel');
@@ -96,23 +110,23 @@ async function painel(controle, opcoes) {
   const porta = opcoes.porta ?? PADRAO.porta;
   const servidor = criarPainel({ controle });
   try {
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       servidor.once('error', reject);
-      servidor.listen(porta, '127.0.0.1', resolve);
+      servidor.listen(porta, '127.0.0.1', () => resolve());
     });
   } catch (err) {
     await controle.fechar();
-    throw err.code === 'EADDRINUSE' ? new Error(`porta ${porta} em uso; use --porta`) : err;
+    throw (err as NodeJS.ErrnoException).code === 'EADDRINUSE' ? new Error(`porta ${porta} em uso; use --porta`) : err;
   }
   if (!controle.configuracao()) console.log('sem configuração: escolha pleitos e UFs no painel');
-  console.log(`painel em http://localhost:${servidor.address().port}`);
+  console.log(`painel em http://localhost:${(servidor.address() as AddressInfo).port}`);
   tratarCtrlC(controle, async () => {
     await controle.fechar();
     process.exit(0);
   });
 }
 
-async function extrair(opcoes) {
+async function extrair(opcoes: OpcoesCli): Promise<void> {
   if (!opcoes.uf) throw new Error('informe --uf');
   const dados = opcoes.dados ?? pastaDados(PADRAO.hd, 'ele2026');
   for (const uf of lista(opcoes.uf)) {
@@ -126,11 +140,11 @@ async function extrair(opcoes) {
   }
 }
 
-async function analisar(opcoes) {
+async function analisar(opcoes: OpcoesCli): Promise<void> {
   if (!opcoes.uf) throw new Error('informe --uf');
   const dados = opcoes.dados ?? pastaDados(PADRAO.hd, 'ele2026');
-  let turnos;
-  let eleicoes;
+  let turnos: Turnos | undefined;
+  let eleicoes: Eleicoes | undefined;
   if (opcoes.turnos !== undefined) {
     const [primeiro = null, segundo = null] = lista(opcoes.turnos).map(Number);
     turnos = { primeiro, segundo };
@@ -148,7 +162,7 @@ async function analisar(opcoes) {
   }
 }
 
-function inteiro(valor, nome, minimo = 1) {
+function inteiro(valor: string | undefined, nome: string, minimo = 1): number | undefined {
   if (valor === undefined) return undefined;
   if (!/^\d+$/.test(valor) || Number(valor) < minimo) {
     throw new Error(`${nome} precisa ser um inteiro ${minimo ? 'positivo' : 'não negativo'}: ${valor}`);
@@ -156,8 +170,8 @@ function inteiro(valor, nome, minimo = 1) {
   return Number(valor);
 }
 
-async function main(argv) {
-  const { values: opcoes, positionals } = parseArgs({
+async function main(argv: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
     options: {
@@ -170,7 +184,8 @@ async function main(argv) {
       'sem-iniciar': { type: 'boolean' },
     },
   });
-  const [comando] = positionals;
+  const opcoes: OpcoesCli = { ...values, concorrencia: undefined, porta: undefined };
+  const [comando = ''] = positionals;
   if (!['eleicoes', 'coletar', 'painel', 'extrair', 'analisar'].includes(comando)) {
     console.log(AJUDA);
     process.exitCode = 1;
@@ -178,8 +193,8 @@ async function main(argv) {
   }
   if (comando === 'extrair') return extrair(opcoes);
   if (comando === 'analisar') return analisar(opcoes);
-  opcoes.concorrencia = inteiro(opcoes.concorrencia, '--concorrencia');
-  opcoes.porta = inteiro(opcoes.porta, '--porta', 0); // 0: porta livre qualquer
+  opcoes.concorrencia = inteiro(values.concorrencia, '--concorrencia');
+  opcoes.porta = inteiro(values.porta, '--porta', 0); // 0: porta livre qualquer
   const http = new HttpClient({ concorrencia: PADRAO.concorrencia, userAgent: PADRAO.userAgent });
   const eleicoes = await buscarEleicoes(http, PADRAO);
   if (comando === 'eleicoes') return listarEleicoes(eleicoes);
@@ -189,6 +204,6 @@ async function main(argv) {
 }
 
 main(process.argv.slice(2)).catch((err) => {
-  console.error(`erro: ${err.message}`);
+  console.error(`erro: ${mensagem(err)}`);
   process.exitCode = 1;
 });

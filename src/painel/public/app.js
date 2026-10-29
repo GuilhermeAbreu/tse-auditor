@@ -1,11 +1,81 @@
-const $ = (id) => document.getElementById(id);
+// @ts-check
+
+/**
+ * Elementos com tipo específico usados pelo painel (os demais são HTMLElement).
+ * @typedef {{
+ *   configuracao: HTMLDetailsElement, 'btn-iniciar': HTMLButtonElement, 'btn-parar': HTMLButtonElement,
+ *   'cfg-concorrencia': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLSelectElement,
+ *   'an-sinal': HTMLSelectElement, 'an-modal': HTMLDialogElement, 'an-ranking': HTMLTableElement,
+ * }} Ids
+ */
+
+/**
+ * GET /api/eventos (SSE)
+ * @typedef {{ uf: string, status: string, total: number, concluidas: number, erros: number,
+ *   semArquivos: number, bytes: number | null, pausada: boolean }} UfEstado
+ * @typedef {{
+ *   coleta: { rodando: boolean, ufAtual?: string | null, municipioAtual?: string | null,
+ *     motivoParada?: string | null, velocidadeBps: number | null },
+ *   configuracao: unknown, manifestErro?: string | null,
+ *   totais: { bytes: number | null, concluidas: number, secoes: number },
+ *   disco: { projecaoBytes: number | null, projecaoPreliminar?: boolean, livres: number | null },
+ *   ufs: UfEstado[],
+ *   errosSecoes: { uf: string, pleito: string, mun: string, zona: string, secao: string, erro: string }[],
+ *   eventos: { nivel: string, ts: string | number, uf?: string | null, msg: string }[],
+ * }} Estado
+ */
+
+/**
+ * GET /api/config
+ * @typedef {{ min: number, max: number, maxLength?: number, alerta?: number }} Limite
+ * @typedef {{ cd: string, nome: string, turno: number, cargos: string[] }} Eleicao
+ * @typedef {{ cd: string, ciclo: string, data: string, eleicoes: Eleicao[] }} Pleito
+ * @typedef {Record<string, any>} Opcoes opções de coleta (concorrencia, http.*, limites…), acessadas por caminho
+ * @typedef {{
+ *   atual: (Opcoes & { pleitos: string[], ufs: string[], ciclo: string, concorrencia: number, dados?: string }) | null,
+ *   disponiveis: { pleitos: Pleito[], ufs: string[] },
+ *   padroes: Opcoes,
+ *   limites: Record<string, Limite>,
+ *   somenteLeitura: { dadosFixo?: string | null, base: string, ambiente: string, porta: number },
+ * }} Config
+ * @typedef {Opcoes & { pleitos: string[], ufs: string[], concorrencia: number, http: Record<string, any> }} FormConfig
+ */
+
+/**
+ * /api/analise/*
+ * @typedef {{ uf: string, ok: number, secoes: number, achados?: number | null,
+ *   secoesComAchados?: number | null, analisadoEm?: string | null }} AnaliseUf
+ * @typedef {{ uf: string, estado: string, etapa?: string, origem?: string, progresso?: string, erro?: string }} Job
+ * @typedef {{ mun: string, zona: string, secao: string, pontuacao: number, sinais: string[],
+ *   explicacoes?: string | string[] | null }} SecaoRanking
+ * @typedef {{ sinais: { sinal: string, n: number }[], secoes: SecaoRanking[] }} Ranking
+ * @typedef {{ pleito: number, sinal: string, valor: number, referencia: number, pontuacao: number,
+ *   detalhe?: string | null, explicacoesCandidatas?: string | string[] | null }} Achado
+ * @typedef {{ inicio: string, votos: number, biometria: number, mesario: number, anoNascimento: number }} Intervalo
+ * @typedef {{ pleito: number, votos: number, primeiroVoto: string, ultimoVoto: string, intervalos: Intervalo[] }} LinhaDoTempo
+ * @typedef {{ pleito: number, tipo: string, numero?: number, votos: number }} VotoPresidente
+ * @typedef {{ pleito: number, [campo: string]: any }} TurnoSecao colunas da seção extraída (aptos, status, local…)
+ * @typedef {{ mun: string, zona: string, secao: string, horasParaBrasilia: number, turnos: TurnoSecao[],
+ *   achados: Achado[], presidente: VotoPresidente[], linhaDoTempo: LinhaDoTempo[] }} DetalheSecao
+ */
+
+/**
+ * @template {string} K
+ * @param {K} id
+ * @returns {K extends keyof Ids ? Ids[K] : HTMLElement}
+ */
+const $ = (id) => /** @type {any} */ (document.getElementById(id));
+/** @param {unknown} s */
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/** @param {number} n */
 const num = (n) => n.toLocaleString('pt-BR');
+/** @type {Record<string, string>} */
 const ROTULO = {
   aguardando: 'Aguardando', baixando: 'Baixando', pausada: 'Pausada', pausando: 'Pausando…',
   baixado: 'Baixado', baixado_com_erros: 'Concluída c/ erros',
 };
 
+/** @param {number | null | undefined} b */
 function fmtBytes(b) {
   if (b == null) return '—';
   const unidades = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -17,6 +87,7 @@ function fmtBytes(b) {
   return `${b.toFixed(i ? 1 : 0)} ${unidades[i]}`;
 }
 
+/** @param {UfEstado} u */
 function linhaUf(u) {
   const pct = u.total ? Math.floor(((u.concluidas + u.erros) / u.total) * 100) : 0;
   const acao = u.pausada ? 'iniciar' : 'pausar';
@@ -32,8 +103,10 @@ function linhaUf(u) {
   </tr>`;
 }
 
+/** @type {Estado | null} */
 let ultimoEstado = null;
 
+/** @param {Estado} e */
 function render(e) {
   ultimoEstado = e;
   const c = e.coleta;
@@ -65,24 +138,26 @@ function render(e) {
     `<li class="${esc(ev.nivel)}"><time>${esc(new Date(ev.ts).toLocaleString('pt-BR'))}</time> ${esc(ev.uf?.toUpperCase() ?? '')} ${esc(ev.msg)}</li>`).join('');
 }
 
+/** @param {string} msg */
 function avisar(msg) {
   $('situacao').textContent = msg;
   $('situacao').classList.add('erro');
 }
 
+/** @param {string} caminho */
 async function enviar(caminho) {
   try {
     const r = await fetch(caminho, { method: 'POST', headers: { 'x-tse-auditor': '1' } });
     if (!r.ok) avisar(`falha no comando (${r.status}): ${(await r.json().catch(() => ({}))).erro ?? r.statusText}`);
     return r.ok;
   } catch (err) {
-    avisar(`falha no comando: ${err.message}`);
+    avisar(`falha no comando: ${/** @type {Error} */ (err).message}`);
     return false;
   }
 }
 
 document.addEventListener('click', async (ev) => {
-  const botao = ev.target.closest('button');
+  const botao = /** @type {Element} */ (ev.target).closest('button');
   if (!botao) return;
   const caminho = botao.dataset.uf ? `/api/uf/${botao.dataset.uf}/${botao.dataset.acao}` : botao.dataset.coleta && `/api/coleta/${botao.dataset.coleta}`;
   if (!caminho) return;
@@ -92,6 +167,13 @@ document.addEventListener('click', async (ev) => {
 
 // ---- configuração ----
 
+/**
+ * @template {keyof HTMLElementTagNameMap} T
+ * @param {T} tag
+ * @param {Record<string, unknown>} [props]
+ * @param {...(Node | string)} filhos
+ * @returns {HTMLElementTagNameMap[T]}
+ */
 const el = (tag, props = {}, ...filhos) => {
   const n = Object.assign(document.createElement(tag), props);
   n.append(...filhos);
@@ -99,6 +181,7 @@ const el = (tag, props = {}, ...filhos) => {
 };
 
 // Opções avançadas, agrupadas. `campo` usa o mesmo caminho de `limites` (ex.: http.tentativas).
+/** @type {[titulo: string, campos: { campo: string, rotulo: string, dica: string, tipo?: string }[]][]} */
 const AVANCADO = [
   ['Conexões com o TSE', [
     { campo: 'http.tentativas', rotulo: 'Tentativas por requisição', dica: 'quantas vezes repetir uma requisição que falhou (429, 5xx ou rede) antes de desistir' },
@@ -126,29 +209,35 @@ const AVANCADO = [
   ]],
 ];
 
+/** @type {Config | null} */
 let cfg = null; // última resposta de GET /api/config
 
+/** @param {any} objeto @param {string} campo @returns {any} */
 const obter = (objeto, campo) => campo.split('.').reduce((o, k) => o?.[k], objeto);
 
+/** @param {string} texto */
 const curto = (texto, max = 40) => (texto.length > max ? `${texto.slice(0, max - 1)}…` : texto);
 
 // Uma linha por pleito: "6257 1º turno · Presidente | ..." (consultas populares longas são encurtadas;
 // o texto completo fica no title).
+/** @param {Pleito} p */
 function descreverEleicoes(p) {
   return p.eleicoes.map((e) => `${e.cd} ${e.turno}º turno${e.cargos.length ? ` · ${e.cargos.map((c) => curto(c)).join(', ')}` : ''}`).join(' | ');
 }
 
+/** @param {string} name @param {string} value @param {boolean} marcada */
 function caixa(name, value, marcada) {
   return el('input', { type: 'checkbox', name, value, checked: marcada });
 }
 
+/** @param {{ campo: string, rotulo: string, dica: string, tipo?: string }} opcao */
 function campoAvancado({ campo, rotulo, dica, tipo = 'number' }) {
-  const lim = cfg.limites[campo] ?? {};
+  const lim = /** @type {Config} */ (cfg).limites[campo] ?? /** @type {Limite} */ ({});
   const entrada = el('input', { type: tipo, id: `cfg-${campo}`, required: tipo !== 'checkbox' });
   entrada.dataset.campo = campo;
   if (tipo === 'number') Object.assign(entrada, { min: lim.min, max: lim.max, step: 1 });
   if (lim.maxLength) entrada.maxLength = lim.maxLength;
-  let padrao = obter(cfg.padroes, campo);
+  let padrao = obter(/** @type {Config} */ (cfg).padroes, campo);
   if (typeof padrao === 'boolean') padrao = padrao ? 'ligado' : 'desligado';
   const faixa = tipo === 'number' ? `; de ${num(lim.min)} a ${num(lim.max)}` : '';
   return el('label', { className: 'campo' },
@@ -157,22 +246,24 @@ function campoAvancado({ campo, rotulo, dica, tipo = 'number' }) {
     el('span', { className: 'dica', textContent: `${dica} (padrão ${typeof padrao === 'number' ? num(padrao) : padrao}${faixa})` }));
 }
 
+/** @param {Opcoes} origem */
 function preencherOpcoes(origem) {
   $('cfg-concorrencia').value = origem.concorrencia;
-  for (const entrada of $('cfg-avancado').querySelectorAll('[data-campo]')) {
-    if (entrada.type === 'checkbox') entrada.checked = obter(origem, entrada.dataset.campo) !== false;
-    else entrada.value = obter(origem, entrada.dataset.campo);
+  for (const entrada of /** @type {NodeListOf<HTMLInputElement>} */ ($('cfg-avancado').querySelectorAll('[data-campo]'))) {
+    if (entrada.type === 'checkbox') entrada.checked = obter(origem, /** @type {string} */ (entrada.dataset.campo)) !== false;
+    else entrada.value = obter(origem, /** @type {string} */ (entrada.dataset.campo));
   }
   avisarConcorrencia();
 }
 
 function renderConfig() {
-  const { atual, disponiveis, padroes, limites, somenteLeitura } = cfg;
+  const { atual, disponiveis, padroes, limites, somenteLeitura } = /** @type {Config} */ (cfg);
   const escolhidos = new Set(atual?.pleitos ?? []);
+  /** @type {Map<string, Pleito[]>} */
   const ciclos = new Map();
   for (const p of disponiveis.pleitos) {
     if (!ciclos.has(p.ciclo)) ciclos.set(p.ciclo, []);
-    ciclos.get(p.ciclo).push(p);
+    /** @type {Pleito[]} */ (ciclos.get(p.ciclo)).push(p);
   }
   $('cfg-pleitos').replaceChildren(...[...ciclos].map(([ciclo, pleitos], i) =>
     el('details', { className: 'ciclo', open: atual ? atual.ciclo === ciclo : i === 0 },
@@ -192,7 +283,7 @@ function renderConfig() {
 
   $('cfg-avancado').replaceChildren(...AVANCADO.map(([titulo, campos]) =>
     el('fieldset', {}, el('legend', { textContent: titulo }), ...campos.map(campoAvancado))));
-  $('cfg-avancado').lastChild.append(
+  /** @type {HTMLElement} */ ($('cfg-avancado').lastChild).append(
     el('p', { className: 'dica', textContent: somenteLeitura.dadosFixo
       ? `A pasta de dados foi fixada por --dados (${somenteLeitura.dadosFixo}); o HD acima não é usado.`
       : 'O HD precisa estar conectado ao aplicar. Nada é gravado fora de <HD>/tse<ano>.' }),
@@ -220,22 +311,26 @@ async function carregarConfig() {
     cfg = await r.json();
     renderConfig();
   } catch (err) {
-    mensagemConfig(`não foi possível ler a configuração: ${err.message}`, 'erro');
+    mensagemConfig(`não foi possível ler a configuração: ${/** @type {Error} */ (err).message}`, 'erro');
   }
 }
 
+/** @param {string} texto */
 function mensagemConfig(texto, classe = '') {
   $('cfg-msg').textContent = texto;
   $('cfg-msg').className = classe;
 }
 
-const marcados = (name) => [...$('form-config').querySelectorAll(`input[name="${name}"]:checked`)].map((i) => i.value);
+/** @param {string} name @returns {string[]} */
+const marcados = (name) => [.../** @type {NodeListOf<HTMLInputElement>} */ ($('form-config').querySelectorAll(`input[name="${name}"]:checked`))].map((i) => i.value);
 
+/** @returns {FormConfig} */
 function lerFormulario() {
+  /** @type {FormConfig} */
   const config = { pleitos: marcados('pleito'), ufs: marcados('uf'), concorrencia: Number($('cfg-concorrencia').value), http: {} };
-  for (const entrada of $('cfg-avancado').querySelectorAll('[data-campo]')) {
+  for (const entrada of /** @type {NodeListOf<HTMLInputElement>} */ ($('cfg-avancado').querySelectorAll('[data-campo]'))) {
     const valor = entrada.type === 'checkbox' ? entrada.checked : entrada.type === 'number' ? Number(entrada.value) : entrada.value;
-    const partes = entrada.dataset.campo.split('.');
+    const partes = /** @type {string} */ (entrada.dataset.campo).split('.');
     if (partes.length === 2) config[partes[0]][partes[1]] = valor;
     else config[partes[0]] = valor;
   }
@@ -243,6 +338,7 @@ function lerFormulario() {
 }
 
 // Mesmas regras do servidor, para avisar antes de enviar.
+/** @param {FormConfig} config */
 function problemaNaConfig(config) {
   if (config.pleitos.length === 0) return 'escolha ao menos um pleito';
   const ciclos = new Set(config.pleitos.map((cd) => cfg?.disponiveis.pleitos.find((p) => p.cd === cd)?.ciclo));
@@ -278,13 +374,13 @@ $('cfg-padroes').addEventListener('click', () => {
 
 $('form-config').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const iniciar = ev.submitter?.value === 'iniciar';
+  const iniciar = /** @type {HTMLButtonElement | null} */ (ev.submitter)?.value === 'iniciar';
   const config = lerFormulario();
   const problema = problemaNaConfig(config);
   if (problema) return mensagemConfig(problema, 'erro');
   if (ultimoEstado?.coleta.rodando
     && !confirm('A coleta atual será parada e reiniciada com a nova configuração; o que já foi baixado é mantido. Continuar?')) return;
-  const botoes = $('form-config').querySelectorAll('button[type=submit]');
+  const botoes = /** @type {NodeListOf<HTMLButtonElement>} */ ($('form-config').querySelectorAll('button[type=submit]'));
   for (const b of botoes) b.disabled = true;
   mensagemConfig('aplicando… (se a coleta estiver rodando, espera as seções em andamento)');
   try {
@@ -301,7 +397,7 @@ $('form-config').addEventListener('submit', async (ev) => {
     await carregarConfig();
     mensagemConfig(iniciar ? 'configuração aplicada; coleta iniciada' : 'configuração aplicada', 'ok');
   } catch (err) {
-    mensagemConfig(`não aplicada: ${err.message}`, 'erro');
+    mensagemConfig(`não aplicada: ${/** @type {Error} */ (err).message}`, 'erro');
   } finally {
     for (const b of botoes) b.disabled = false;
   }
@@ -311,15 +407,17 @@ carregarConfig();
 
 const fonte = new EventSource('/api/eventos');
 fonte.onmessage = (m) => render(JSON.parse(m.data));
-fonte.addEventListener('falha', (m) => avisar(`falha ao ler o estado: ${JSON.parse(m.data)}`));
+fonte.addEventListener('falha', (m) => avisar(`falha ao ler o estado: ${JSON.parse(/** @type {MessageEvent} */ (m).data)}`));
 fonte.onerror = () => avisar('sem conexão com o painel; tentando de novo…');
 
 // ---- análise: seções destoantes (sinais + explicações candidatas; nunca veredito) ----
 
 const CORES = { biometria: '#2f81f7', mesario: '#d29922', anoNascimento: '#8957e5' };
 const ROTULO_HAB = { biometria: 'biometria', mesario: 'mesário', anoNascimento: 'ano de nascimento' };
+/** @type {{ ufs: AnaliseUf[], jobs: { jobs: Job[] }, uf: string | null, rankingDe: string | null }} */
 const an = { ufs: [], jobs: { jobs: [] }, uf: null, rankingDe: null };
 
+/** @param {string} caminho @param {RequestInit} [opcoes] @returns {Promise<any>} JSON da API, tipado por quem chama */
 async function obterJson(caminho, opcoes) {
   const r = await fetch(caminho, opcoes);
   const corpo = await r.json().catch(() => ({}));
@@ -327,9 +425,11 @@ async function obterJson(caminho, opcoes) {
   return corpo;
 }
 
+/** @param {string | null | undefined} texto */
 const td = (texto) => el('td', { textContent: texto ?? '—' });
 
 // Glossário dos códigos de sinais (por grupo de cor) e das explicações candidatas.
+/** @type {Record<string, [grupo: string, rotulo: string, descricao: string]>} */
 const SINAIS = {
   MESARIO_ACIMA_LOCAL: ['mesario', 'Mesário acima do local', 'Proporção de eleitores liberados pelo mesário bem acima das outras seções do mesmo local de votação.'],
   MESARIO_ACIMA_ZONA: ['mesario', 'Mesário acima da zona', 'Proporção de liberação pelo mesário bem acima das seções da mesma zona.'],
@@ -344,6 +444,7 @@ const SINAIS = {
   COMPARECIMENTO_ACIMA_APTOS: ['limites', 'Comparecimento acima de aptos', 'Mais eleitores votaram do que o número de aptos da seção.'],
   VOTOS_ACIMA_COMPARECIMENTO: ['limites', 'Votos acima do comparecimento', 'Total de votos de um cargo maior que o comparecimento.'],
 };
+/** @type {Record<string, [rotulo: string, descricao: string]>} */
 const EXPLICACOES = {
   fila_17h: ['Fila no encerramento', 'Votos contínuos até o encerramento, indicando fila real.'],
   leitor_biometrico_defeito: ['Leitor biométrico com defeito', 'Muitas tentativas de digital falhando desde cedo; o mesário precisa liberar mais.'],
@@ -353,12 +454,17 @@ const EXPLICACOES = {
   desvio_relogio: ['Desvio no relógio', 'O relógio da urna parece adiantado ou atrasado.'],
 };
 const GRUPOS = { mesario: 'Liberação pelo mesário', turnos: '1º × 2º turno', horarios: 'Horários', limites: 'Limites' };
+/** @param {string} c */
 const badgeSinal = (c) => el('span', { className: `badge g-${SINAIS[c]?.[0] ?? 'outro'}`, textContent: SINAIS[c]?.[1] ?? c, title: SINAIS[c]?.[2] ?? c });
+/** @param {string} c */
 const badgeExp = (c) => el('span', { className: 'badge explicacao', textContent: EXPLICACOES[c]?.[0] ?? c, title: EXPLICACOES[c]?.[1] ?? c });
+/** @param {unknown} v @returns {string[]} */
 const listaExp = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/[,;]\s*/)).filter(Boolean);
+/** @param {string[]} codigos @param {(c: string) => Node} f */
 const tdBadges = (codigos, f) => el('td', {}, ...(codigos.length ? codigos.map(f) : [document.createTextNode('—')]));
 
 function desenharGlossario() {
+  /** @param {Node} badge @param {string} texto */
   const linha = (badge, texto) => el('li', {}, badge, document.createTextNode(` ${texto}`));
   $('an-glossario').replaceChildren(
     el('summary', { textContent: 'Glossário: sinais e explicações candidatas' }),
@@ -382,7 +488,7 @@ function renderAnaliseUfs() {
     const botao = el('button', { type: 'button', textContent: ativo.has(uf) ? 'Na fila…' : 'Extrair e analisar',
       disabled: !pronta || ativo.has(uf), title: pronta ? 'roda extrair e depois analisar para a UF' : 'disponível quando a coleta da UF termina' });
     botao.dataset.analisar = uf;
-    return el('tr', {}, td(uf.toUpperCase()), td(ROTULO[st] ?? st ?? '—'), td(d ? `${num(d.ok)} ok / ${num(d.secoes)}` : null),
+    return el('tr', {}, td(uf.toUpperCase()), td(ROTULO[/** @type {string} */ (st)] ?? st ?? '—'), td(d ? `${num(d.ok)} ok / ${num(d.secoes)}` : null),
       td(d?.achados != null ? num(d.achados) : null), td(d?.secoesComAchados != null ? num(d.secoesComAchados) : null),
       td(d?.analisadoEm ? new Date(d.analisadoEm).toLocaleString('pt-BR') : null), el('td', {}, botao));
   }));
@@ -410,7 +516,7 @@ async function atualizarAnalise() {
     const uf = $('an-uf').value;
     if (uf && (uf !== an.rankingDe || mudou)) await carregarRanking();
   } catch (err) {
-    $('an-msg').textContent = `análise: ${err.message}`;
+    $('an-msg').textContent = `análise: ${/** @type {Error} */ (err).message}`;
   }
 }
 
@@ -418,7 +524,7 @@ async function carregarRanking() {
   const uf = $('an-uf').value;
   if (!uf) return;
   const sinal = $('an-sinal').value;
-  const r = await obterJson(`/api/analise/${uf}/ranking?limite=200&sinal=${encodeURIComponent(sinal)}`);
+  const r = /** @type {Ranking} */ (await obterJson(`/api/analise/${uf}/ranking?limite=200&sinal=${encodeURIComponent(sinal)}`));
   if (an.rankingDe !== uf) {
     $('an-sinal').replaceChildren(el('option', { value: '', textContent: 'todos' }),
       ...r.sinais.map((s) => el('option', { value: s.sinal, textContent: `${SINAIS[s.sinal]?.[1] ?? s.sinal} (${num(s.n)})` })));
@@ -438,22 +544,25 @@ async function carregarRanking() {
 }
 
 const SVG = 'http://www.w3.org/2000/svg';
+/** @param {string} tag @param {Record<string, string | number>} [attrs] @param {...(Node | string)} filhos */
 const svg = (tag, attrs = {}, ...filhos) => {
   const n = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
   n.append(...filhos);
   return n;
 };
 
 // Barras por 10 min (horário local da urna), empilhadas por tipo de habilitação.
+/** @param {LinhaDoTempo} t @param {number} [escala] */
 function linhaDoTempo(t, escala) {
   const ivs = t.intervalos;
   if (!ivs.length) return el('p', { className: 'dica', textContent: 'sem votos no log do dia da eleição' });
+  /** @param {string} h */
   const min = (h) => Number(h.slice(0, 2)) * 60 + Number(h.slice(3, 5));
   const ini = 6 * 60;
   const fim = 18 * 60; // mesmo eixo para os dois turnos
   const maxV = escala ?? Math.max(...ivs.map((i) => i.votos), 1);
-  const L = 40, A = 140, W = Math.max(400, ((fim - ini) / 10) * 8), x = (m) => L + ((m - ini) / 10) * 8;
+  const L = 40, A = 140, W = Math.max(400, ((fim - ini) / 10) * 8), x = (/** @type {number} */ m) => L + ((m - ini) / 10) * 8;
   const g = svg('svg', { viewBox: `0 0 ${L + W + 10} ${A + 30}`, class: 'tempo', role: 'img' });
   g.append(svg('title', {}, `votos por 10 minutos, pleito ${t.pleito}`));
   for (let h = Math.ceil(ini / 60) * 60; h <= fim; h += 60) {
@@ -463,7 +572,7 @@ function linhaDoTempo(t, escala) {
   g.append(svg('text', { x: 2, y: 10 }, String(maxV)), svg('text', { x: 2, y: A }, '0'));
   for (const i of ivs) {
     let y = A;
-    for (const k of ['biometria', 'mesario', 'anoNascimento']) {
+    for (const k of /** @type {const} */ (['biometria', 'mesario', 'anoNascimento'])) {
       const h = (i[k] / maxV) * (A - 4);
       if (!h) continue;
       y -= h;
@@ -474,13 +583,19 @@ function linhaDoTempo(t, escala) {
   return g;
 }
 
+/** @param {number | null | undefined} v */
 const pct = (v) => (v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`);
+/** @param {unknown} ts */
 const hora = (ts) => String(ts ?? '').slice(11, 16) || '—';
+/** @param {number} v @param {number} r */
 const vezes = (v, r) => (r > 0 ? `cerca de ${(v / r).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} vezes` : 'bem acima de');
+/** @param {number} z */
 const distancia = (z) => `distância estatística ${Math.abs(z).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}`;
 
 // Frase em linguagem comum explicando por que o achado apareceu.
+/** @param {Achado} a @param {(pleito: number) => string} nomeTurno */
 function frase(a, nomeTurno) {
+  /** @type {Record<string, any>} */
   let d = {};
   try { d = JSON.parse(a.detalhe || '{}'); } catch { /* detalhe inválido: usa só o texto do glossário */ }
   const t = nomeTurno(a.pleito);
@@ -506,15 +621,16 @@ function frase(a, nomeTurno) {
 
 function fecharModal() { $('an-modal').close(); }
 
+/** @param {string} uf @param {SecaoRanking} s */
 async function abrirSecao(uf, s) {
   const modal = $('an-modal');
   const corpo = $('an-modal-corpo');
   corpo.replaceChildren(el('p', { textContent: 'carregando…' }));
   if (!modal.open) modal.showModal();
   try {
-    const d = await obterJson(`/api/analise/${uf}/secao/${encodeURIComponent(s.mun)}/${encodeURIComponent(s.zona)}/${encodeURIComponent(s.secao)}`);
+    const d = /** @type {DetalheSecao} */ (await obterJson(`/api/analise/${uf}/secao/${encodeURIComponent(s.mun)}/${encodeURIComponent(s.zona)}/${encodeURIComponent(s.secao)}`));
     const turnos = [...d.turnos].sort((x, y) => x.pleito - y.pleito);
-    const nomeTurno = (p) => (turnos.findIndex((t) => t.pleito === p) === 1 ? '2º turno' : '1º turno');
+    const nomeTurno = (/** @type {number} */ p) => (turnos.findIndex((t) => t.pleito === p) === 1 ? '2º turno' : '1º turno');
     const [t1, t2] = turnos;
     const pontuacao = Math.max(...d.achados.map((a) => a.pontuacao), 0);
 
@@ -537,20 +653,26 @@ async function abrirSecao(uf, s) {
     });
 
     // Tabela comparativa 1º × 2º turno.
+    /** @param {TurnoSecao | undefined} t @param {string} k */
     const val = (t, k) => (t ? t[k] : null);
+    /** @param {TurnoSecao | undefined} t @param {string} chave */
     const votos = (t, chave) => {
       if (!t) return null;
       const v = d.presidente.filter((p) => p.pleito === t.pleito && (p.tipo === 'nominal' ? `c${p.numero}` : p.tipo) === chave);
       return v.length ? v.reduce((x, p) => x + p.votos, 0) : 0;
     };
+    /** @param {number | null | undefined} v @param {number | null} [base] */
     const fmt = (v, base) => (v == null ? '—' : base ? `${num(v)} (${pct(v / base)})` : num(v));
+    /** @param {number | null | undefined} a @param {number | null | undefined} b */
     const dif = (a, b) => {
       if (a == null || b == null) return el('td', { textContent: '—' });
       const x = b - a;
       return el('td', { className: x > 0 ? 'sobe' : x < 0 ? 'desce' : '', textContent: x === 0 ? '0' : `${x > 0 ? '+' : ''}${num(x)}` });
     };
+    /** @param {string} rotulo @param {number | null} a @param {number | null} b @param {number | null} [baseA] @param {number | null} [baseB] @param {string} [chave] */
     const linha = (rotulo, a, b, baseA, baseB, chave) => el('tr', { className: destaque.has(chave) ? 'destaque' : '' },
       el('th', { textContent: rotulo }), td(fmt(a, baseA)), td(fmt(b, baseB)), dif(a, b));
+    /** @param {string} titulo */
     const grupo = (titulo) => el('tr', { className: 'grupo' }, el('th', { colSpan: 4, textContent: titulo }));
     const c1 = val(t1, 'comparecimento'), c2 = val(t2, 'comparecimento');
     const chavesPres = [...new Set(d.presidente.map((p) => (p.tipo === 'nominal' ? `c${p.numero}` : p.tipo)))]
@@ -573,7 +695,7 @@ async function abrirSecao(uf, s) {
     // Linhas do tempo na mesma escala.
     const lts = turnos.map((t) => d.linhaDoTempo.find((x) => x.pleito === t.pleito));
     const escala = Math.max(1, ...lts.flatMap((lt) => (lt ? lt.intervalos.map((i) => i.votos) : [])));
-    const legenda = el('p', { className: 'legenda' }, ...Object.keys(CORES).map((k) =>
+    const legenda = el('p', { className: 'legenda' }, .../** @type {(keyof typeof CORES)[]} */ (Object.keys(CORES)).map((k) =>
       el('span', {}, Object.assign(el('i'), { style: `background:${CORES[k]}` }), ROTULO_HAB[k])));
     const tempos = el('div', { className: 'tempos' }, ...turnos.map((t, i) => el('div', {},
       el('h5', { textContent: `${nomeTurno(t.pleito)}${lts[i] ? `: ${lts[i].votos} votos, de ${lts[i].primeiroVoto.slice(0, 5)} a ${lts[i].ultimoVoto.slice(0, 5)}` : ''}` }),
@@ -599,7 +721,7 @@ async function abrirSecao(uf, s) {
       el('h4', { textContent: 'Votos ao longo do dia (a cada 10 min)' }), legenda, tempos,
       tecnico);
   } catch (err) {
-    corpo.replaceChildren(el('p', { className: 'erro', textContent: `não foi possível abrir a seção: ${err.message}` }));
+    corpo.replaceChildren(el('p', { className: 'erro', textContent: `não foi possível abrir a seção: ${/** @type {Error} */ (err).message}` }));
   }
 }
 
@@ -607,13 +729,13 @@ $('an-modal-fechar').addEventListener('click', fecharModal);
 $('an-modal').addEventListener('click', (ev) => { if (ev.target === $('an-modal')) fecharModal(); });
 
 $('an-ufs').addEventListener('click', async (ev) => {
-  const b = ev.target.closest('button[data-analisar]');
+  const b = /** @type {HTMLButtonElement | null} */ (/** @type {Element} */ (ev.target).closest('button[data-analisar]'));
   if (!b) return;
   b.disabled = true;
   try {
     await obterJson(`/api/analise/${b.dataset.analisar}/executar`, { method: 'POST', headers: { 'x-tse-auditor': '1' } });
   } catch (err) {
-    $('an-msg').textContent = `não foi possível iniciar: ${err.message}`;
+    $('an-msg').textContent = `não foi possível iniciar: ${/** @type {Error} */ (err).message}`;
   }
   atualizarAnalise();
 });

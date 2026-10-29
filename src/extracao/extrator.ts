@@ -11,14 +11,36 @@ import { decodificarBU, CAMPOS_HABILITACAO } from './bu.ts';
 import { decodificarRDV } from './rdv.ts';
 import { lerLogJez, parsearLog, resumirLog, tipoEvento } from './log.ts';
 import { GravadorParquet } from './parquet.ts';
+import type { Readable } from 'node:stream';
+import type { Coluna } from './parquet.ts';
+import type { BU } from './bu.ts';
+import type { RDV } from './rdv.ts';
+import type { ResumoLog } from './log.ts';
+import type { ConfigSecoesJson, IndiceSecaoJson } from '../tipos/tse.ts';
 
-const deBuffer = promisify(yauzl.fromBuffer);
+type LogSecao = ResumoLog & { logLinhasInvalidas: number };
+type Arquivos = Map<string, () => Promise<Buffer>>;
+type SecaoExtracao = { zona: string; secao: string; nsa: string[]; nsp: string | null };
+type Local = { pleito: number; uf: string; mun: string; zona: string; secao: string };
 
-const LOC = [['pleito', 'INTEGER'], ['uf', 'VARCHAR'], ['mun', 'VARCHAR'], ['zona', 'VARCHAR'], ['secao', 'VARCHAR']];
-export const TABELAS = {
+export interface EstatisticasExtracao {
+  secoes: number;
+  ok: number;
+  parcial: number;
+  semDados: number;
+  agregadasEm: number;
+  comInconsistencia: number;
+  inconsistencias: Record<string, number>;
+  linhas?: Record<string, number>;
+}
+
+const mensagem = (err: unknown) => (err as Error).message;
+
+const LOC: Coluna[] = [['pleito', 'INTEGER'], ['uf', 'VARCHAR'], ['mun', 'VARCHAR'], ['zona', 'VARCHAR'], ['secao', 'VARCHAR']];
+export const TABELAS: Record<string, Coluna[]> = {
   secoes: [...LOC,
     ['status', 'VARCHAR'], ['local', 'INTEGER'], ['aptos', 'INTEGER'], ['comparecimento', 'INTEGER'], ['abstencao', 'INTEGER'],
-    ...CAMPOS_HABILITACAO.map((c) => [c, 'INTEGER']),
+    ...CAMPOS_HABILITACAO.map((c): Coluna => [c, 'INTEGER']),
     ['tipoUrna', 'VARCHAR'], ['numeroInternoUrna', 'INTEGER'], ['versaoVotacao', 'VARCHAR'], ['dataHoraCarga', 'TIMESTAMP'],
     ['abertura', 'TIMESTAMP'], ['encerramento', 'TIMESTAMP'], ['emissao', 'TIMESTAMP'],
     ['agregada', 'BOOLEAN'], ['secoesAgregadas', 'VARCHAR'], ['agregadaEm', 'VARCHAR'], ['substituida', 'BOOLEAN'], ['conjuntos', 'INTEGER'],
@@ -34,26 +56,26 @@ export const TABELAS = {
 };
 
 // Conferências automáticas (mapeamento INFERIDO dos 3 números do BU; ver bu.ts). Devolve códigos curtos.
-export function conferir(bu, log, rdv) {
-  const p = [];
+export function conferir(bu: BU | null, log: LogSecao | null, rdv: RDV | null): string[] {
+  const p: string[] = [];
   if (bu) {
     const soma = CAMPOS_HABILITACAO.reduce((s, c) => s + (bu[c] ?? 0), 0);
     if (bu.qtdHabilitacaoBiometrica != null && soma !== bu.comparecimento) p.push(`hab_soma(${soma})!=comparecimento(${bu.comparecimento})`);
     for (const r of bu.resultados) {
-      const total = r.votos.reduce((s, v) => s + v.quantidade, 0);
+      const total = r.votos.reduce((s, v) => s + (v.quantidade as number), 0);
       if (total % r.comparecimento !== 0 && r.comparecimento > 0) p.push(`votos_${r.codigoCargo}(${total})!=k*comparecimento`);
     }
   }
   if (bu && log?.logDia) {
-    const pares = [
+    const pares: [keyof BU, keyof LogSecao][] = [
       ['comparecimento', 'logVotosComputados'], ['qtdHabilitacaoBiometrica', 'logHabBiometrica'],
       ['qtdHabilitacaoMesario', 'logHabMesario'], ['qtdHabilitacaoAnoNascimento', 'logHabAnoNascimento'],
     ];
     for (const [a, b] of pares) if (bu[a] != null && bu[a] !== log[b]) p.push(`${a}(${bu[a]})!=${b}(${log[b]})`);
   }
   if (bu && rdv) {
-    const chave = (r, v) => `${r.eleicao}|${r.codigoCargo}|${v.tipo}|${v.numero}`;
-    const m = new Map();
+    const chave = (r: { eleicao: number; codigoCargo: number }, v: { tipo: string | null; numero: number | null }) => `${r.eleicao}|${r.codigoCargo}|${v.tipo}|${v.numero}`;
+    const m = new Map<string, number>();
     for (const r of bu.resultados) for (const v of r.votos) if (v.quantidade) m.set(chave(r, v), (m.get(chave(r, v)) ?? 0) + v.quantidade);
     for (const r of rdv.resultados) for (const v of r.votos) m.set(chave(r, v), (m.get(chave(r, v)) ?? 0) - v.quantidade);
     const dif = [...m].filter(([, d]) => d !== 0);
@@ -64,12 +86,13 @@ export function conferir(bu, log, rdv) {
 
 // Abre o zip do município e indexa as entradas sem lê-las: cada arquivo é lido só quando a seção
 // precisa dele (o zip de uma capital passa de GB; ler tudo de uma vez estoura a memória).
-async function abrirZip(caminho) {
-  const zip = await promisify(yauzl.open)(caminho, { lazyEntries: true, autoClose: false });
-  const abrir = promisify(zip.openReadStream.bind(zip));
-  const entradas = new Map();
-  await new Promise((ok, falha) => {
-    zip.on('entry', (e) => {
+async function abrirZip(caminho: string): Promise<{ arquivos: Arquivos; fechar: () => void }> {
+  const abrirArquivo = promisify(yauzl.open) as (caminho: string, opcoes: yauzl.Options) => Promise<yauzl.ZipFile>;
+  const zip = await abrirArquivo(caminho, { lazyEntries: true, autoClose: false });
+  const abrir = promisify(zip.openReadStream.bind(zip)) as (e: yauzl.Entry) => Promise<Readable>;
+  const entradas = new Map<string, yauzl.Entry>();
+  await new Promise<void>((ok, falha) => {
+    zip.on('entry', (e: yauzl.Entry) => {
       if (!e.fileName.endsWith('/')) entradas.set(e.fileName, e);
       zip.readEntry();
     });
@@ -77,38 +100,43 @@ async function abrirZip(caminho) {
     zip.on('error', falha);
     zip.readEntry();
   });
-  const arquivos = new Map([...entradas].map(([nome, e]) => [nome, async () => lerStream(await abrir(e))]));
+  const arquivos: Arquivos = new Map([...entradas].map(([nome, e]) => [nome, async () => lerStream(await abrir(e))]));
   return { arquivos, fechar: () => zip.close() };
 }
 
-function secoesDoConfig(json) {
-  const abr = json.abr[0];
+function secoesDoConfig(json: ConfigSecoesJson): { mun: string; secoes: SecaoExtracao[] }[] {
+  const abr = json.abr![0]!;
   return abr.mu.map((m) => ({
     mun: m.cd,
     secoes: m.zon.flatMap((z) => z.sec.map((s) => ({ zona: z.cd, secao: s.ns, nsa: s.nsa ?? [], nsp: s.nsp && s.nsp !== s.ns ? s.nsp : null }))),
   }));
 }
 
-export async function extrairUF({ dados, uf, pleitos, aoProgresso = () => {} }) {
+export async function extrairUF({ dados, uf, pleitos, aoProgresso = () => {} }: {
+  dados: string;
+  uf: string;
+  pleitos?: (string | number)[] | undefined;
+  aoProgresso?: (p: EstatisticasExtracao & { pleito: string | number; mun: string }) => void;
+}): Promise<EstatisticasExtracao> {
   const UF = uf.toUpperCase();
   const pastaRaw = path.join(dados, 'raw', UF);
   const saida = path.join(dados, 'parquet', UF);
   await mkdir(saida, { recursive: true });
   pleitos ??= (await readdir(pastaRaw)).filter((p) => /^\d+$/.test(p)).sort();
   const g = await GravadorParquet.abrir(path.join(saida, '.extracao.duckdb'));
-  const stats = { secoes: 0, ok: 0, parcial: 0, semDados: 0, agregadasEm: 0, comInconsistencia: 0, inconsistencias: {} };
+  const stats: EstatisticasExtracao = { secoes: 0, ok: 0, parcial: 0, semDados: 0, agregadasEm: 0, comInconsistencia: 0, inconsistencias: {} };
   try {
     for (const [nome, cols] of Object.entries(TABELAS)) await g.criar(nome, cols);
     for (const pleito of pleitos) {
       const pastaPleito = path.join(pastaRaw, String(pleito));
-      const cfg = JSON.parse(await readFile(path.join(pastaPleito, `${uf.toLowerCase()}-p${String(pleito).padStart(6, '0')}-cs.json`), 'latin1'));
+      const cfg: ConfigSecoesJson = JSON.parse(await readFile(path.join(pastaPleito, `${uf.toLowerCase()}-p${String(pleito).padStart(6, '0')}-cs.json`), 'latin1'));
       for (const { mun, secoes } of secoesDoConfig(cfg)) {
-        let zip = { arquivos: new Map(), fechar() {} };
-        let erroZip = null;
+        let zip: { arquivos: Arquivos; fechar: () => void } = { arquivos: new Map(), fechar() {} };
+        let erroZip: string | null = null;
         try {
           zip = await abrirZip(path.join(pastaPleito, `${mun}.zip`));
         } catch (err) {
-          erroZip = err.code === 'ENOENT' ? 'zip do município ausente' : `zip ilegível: ${err.message}`;
+          erroZip = (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'zip do município ausente' : `zip ilegível: ${mensagem(err)}`;
         }
         try {
           for (const s of secoes) {
@@ -129,12 +157,19 @@ export async function extrairUF({ dados, uf, pleitos, aoProgresso = () => {} }) 
   return stats;
 }
 
-async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }) {
+async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }: {
+  g: GravadorParquet;
+  loc: Local;
+  s: SecaoExtracao;
+  arquivos: Arquivos;
+  erroZip: string | null;
+  stats: EstatisticasExtracao;
+}): Promise<void> {
   stats.secoes++;
-  const linha = {
+  const linha: Record<string, unknown> = {
     ...loc, agregada: s.nsa.length > 0, secoesAgregadas: s.nsa.join(',') || null, agregadaEm: s.nsp,
   };
-  const falhar = (arquivo, erro) => g.inserir('falhas', { ...loc, arquivo, erro });
+  const falhar = (arquivo: string, erro: string) => g.inserir('falhas', { ...loc, arquivo, erro });
   if (s.nsp) {
     // seção agregada a outra: não tem arquivos próprios, os votos estão na principal
     stats.agregadasEm++;
@@ -142,33 +177,33 @@ async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }) {
     return;
   }
   const pre = `${s.zona}/${s.secao}/`;
-  let aux = null;
+  let aux: IndiceSecaoJson | null = null;
   try {
     if (erroZip) throw new Error(erroZip);
     const auxNome = [...arquivos.keys()].find((k) => k.startsWith(pre) && k.endsWith('.json') && k.split('/').length === 3);
     if (!auxNome) throw new Error('aux.json da seção ausente');
-    aux = JSON.parse((await arquivos.get(auxNome)()).toString('latin1'));
+    aux = JSON.parse((await arquivos.get(auxNome)!()).toString('latin1')) as IndiceSecaoJson;
   } catch (err) {
-    falhar('aux', err.message);
+    falhar('aux', mensagem(err));
     stats.semDados++;
     g.inserir('secoes', { ...linha, status: 'sem dados' });
     return;
   }
-  const hashes = aux.hashes ?? [];
+  const hashes = aux!.hashes ?? [];
   linha.conjuntos = hashes.length;
   linha.substituida = hashes.length > 1;
   const escolhido = hashes.findLast((h) => /totaliz/i.test(h.st ?? '')) ?? hashes.at(-1);
-  const arq = async (tp) => {
+  const arq = async (tp: string): Promise<Buffer | undefined> => {
     const nm = escolhido?.arq?.find((a) => a.tp === tp)?.nm;
-    const ler = nm ? arquivos.get(`${pre}${escolhido.hash}/${nm}`) : undefined;
+    const ler = nm ? arquivos.get(`${pre}${escolhido!.hash}/${nm}`) : undefined;
     return ler ? ler() : undefined;
   };
-  const tentar = async (tp, fn) => {
-    let buf;
+  const tentar = async <R>(tp: string, fn: (buf: Buffer) => R): Promise<R | null> => {
+    let buf: Buffer | undefined;
     try {
       buf = await arq(tp);
     } catch (err) {
-      falhar(tp, err.message);
+      falhar(tp, mensagem(err));
       return null;
     }
     if (!buf) {
@@ -178,20 +213,20 @@ async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }) {
     try {
       return fn(buf);
     } catch (err) {
-      falhar(tp, err.message);
+      falhar(tp, mensagem(err));
       return null;
     }
   };
 
   const bu = await tentar('bu', decodificarBU);
   const rdv = await tentar('rdv', decodificarRDV);
-  let log = null;
-  let bufLog;
+  let log: LogSecao | null = null;
+  let bufLog: Buffer | undefined;
   let erroLog = 'arquivo ausente';
   try {
     bufLog = await arq('log');
   } catch (err) {
-    erroLog = err.message;
+    erroLog = mensagem(err);
   }
   if (!bufLog) falhar('log', erroLog);
   else {
@@ -200,7 +235,7 @@ async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }) {
       log = { ...resumirLog(eventos, bu?.dataHoraAbertura?.slice(0, 10) ?? null), logLinhasInvalidas: linhasInvalidas };
       for (const e of eventos) g.inserir('eventos_log', { ...loc, ...e, tipo: tipoEvento(e.mensagem) });
     } catch (err) {
-      falhar('log', err.message);
+      falhar('log', mensagem(err));
     }
   }
 

@@ -8,6 +8,30 @@ import { nomeConfigSecoes, nomeIndiceSecao } from '../tse/urls.ts';
 import { md5, md5DoEtag, sha512Hex, vscConfereComDiretorio, vscContemSha512 } from '../tse/integridade.ts';
 import { empacotarMunicipio, listarNomesZip, ZipCorrompidoError } from '../storage/empacotar.ts';
 import { bytesLivres as bytesLivresDoDisco, ehErroDeVolume, garantirVolume } from '../storage/disco.ts';
+import type { ArquivoLinha, Manifest } from '../storage/manifest.ts';
+import type { Urls } from '../tse/urls.ts';
+import type { ClienteHttp, EstadoColeta, IndiceSecao, RespostaHttp, SecaoChave } from '../tipos/dominio.ts';
+import type { ConfigSecoesJson, IndiceSecaoJson } from '../tipos/tse.ts';
+
+type Verificacao = { verificacao: string; erro?: undefined } | { erro: string; verificacao?: undefined };
+type Ctx = { novos: number };
+const mensagem = (err: unknown) => (err as Error).message;
+
+export interface OpcoesColetor {
+  manifest: Manifest;
+  http: ClienteHttp;
+  urls: Urls;
+  pastaDados: string;
+  ciclo: string;
+  pleitos: string[];
+  ufs: string[];
+  minLivreBytes: number;
+  concorrencia?: number;
+  bytesLivres?: (pasta: string) => Promise<number>;
+  agora?: () => number;
+  limiteFalhasRede?: number;
+  tentativasVerificacao?: number;
+}
 
 const TIPOS_NO_VSC = new Set(['bu', 'rdv', 'log']);
 const JANELA_VELOCIDADE_MS = 60_000;
@@ -20,7 +44,7 @@ const HASH_VALIDO = /^[0-9a-f]+$/i;
 const NOME_VALIDO = /^[\w.-]+$/;
 
 // Devolve a descrição do problema do índice, ou null se estiver íntegro.
-function problemaNoIndice(indice) {
+function problemaNoIndice(indice: IndiceSecao): string | null {
   for (const { hash, arquivos } of indice.conjuntos) {
     if (typeof hash !== 'string' || !HASH_VALIDO.test(hash)) return `hash inválido (${JSON.stringify(hash)})`;
     if (arquivos.length === 0) return `conjunto ${hash} sem arquivos`;
@@ -33,13 +57,13 @@ function problemaNoIndice(indice) {
   return null;
 }
 
-async function gravarAtomico(caminho, conteudo) {
+async function gravarAtomico(caminho: string, conteudo: Buffer): Promise<void> {
   await mkdir(path.dirname(caminho), { recursive: true });
   await writeFile(`${caminho}.part`, conteudo);
   await rename(`${caminho}.part`, caminho);
 }
 
-async function existe(caminho) {
+async function existe(caminho: string): Promise<boolean> {
   try {
     await access(caminho);
     return true;
@@ -50,13 +74,13 @@ async function existe(caminho) {
 
 // Executa fn sobre os itens com no máximo `limite` em paralelo. Na primeira falha os demais
 // trabalhadores param de pegar itens; espera todos terminarem e relança o erro.
-async function emParalelo(itens, limite, fn) {
+async function emParalelo<T>(itens: T[], limite: number, fn: (item: T) => Promise<void>): Promise<void> {
   let proximo = 0;
   let falhou = false;
   const trabalhadores = Array.from({ length: Math.min(limite, itens.length) }, async () => {
     while (!falhou && proximo < itens.length) {
       try {
-        await fn(itens[proximo++]);
+        await fn(itens[proximo++]!);
       } catch (err) {
         falhou = true;
         throw err;
@@ -71,34 +95,48 @@ async function emParalelo(itens, limite, fn) {
 export class Coletor extends EventEmitter {
   #parar = false;
   #planejado = false;
-  #execucao = null;
-  #amostras = [];
-  #tentadas = new Set();
+  #execucao: Promise<void> | null = null;
+  #amostras: [number, number][] = [];
+  #tentadas = new Set<string>();
   #falhasRede = 0;
+  declare manifest: Manifest;
+  declare http: ClienteHttp;
+  declare urls: Urls;
+  declare pastaDados: string;
+  declare ciclo: string;
+  declare pleitos: string[];
+  declare ufs: string[];
+  declare minLivreBytes: number;
+  declare concorrencia: number;
+  declare bytesLivres: (pasta: string) => Promise<number>;
+  declare agora: () => number;
+  declare limiteFalhasRede: number;
+  declare tentativasVerificacao: number;
+  estado: EstadoColeta;
 
   constructor({
     manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes,
     concorrencia = 4, bytesLivres = bytesLivresDoDisco, agora = Date.now, limiteFalhasRede = 20, tentativasVerificacao = 3,
-  }) {
+  }: OpcoesColetor) {
     super();
     Object.assign(this, { manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes, concorrencia, bytesLivres, agora, limiteFalhasRede, tentativasVerificacao });
     this.estado = { rodando: false, ufAtual: null, municipioAtual: null, motivoParada: null };
   }
 
-  #pastaRaw(uf) {
+  #pastaRaw(uf: string): string {
     return path.join(this.pastaDados, 'raw', uf.toUpperCase());
   }
 
-  #caminhoZip(pleito, uf, mun) {
+  #caminhoZip(pleito: string, uf: string, mun: string): string {
     return path.join(this.#pastaRaw(uf), pleito, `${mun}.zip`);
   }
 
-  #pastaStaging(pleito, uf, mun) {
+  #pastaStaging(pleito: string, uf: string, mun: string): string {
     return path.join(this.pastaDados, 'staging', uf.toUpperCase(), pleito, mun);
   }
 
   // GET com disjuntor: falhas de rede (sem resposta HTTP) seguidas interrompem a coleta.
-  async #get(url) {
+  async #get(url: string): Promise<RespostaHttp> {
     try {
       const r = await this.http.get(url);
       this.#falhasRede = 0;
@@ -112,7 +150,7 @@ export class Coletor extends EventEmitter {
   }
 
   // Baixa a config de seções de cada UF × pleito, guarda o original em raw/ e registra as seções.
-  async planejar() {
+  async planejar(): Promise<void> {
     this.manifest.registrarUfs(this.ufs);
     for (const uf of this.ufs) {
       for (const pleito of this.pleitos) {
@@ -127,28 +165,28 @@ export class Coletor extends EventEmitter {
           continue;
         }
         await gravarAtomico(path.join(this.#pastaRaw(uf), pleito, nomeConfigSecoes({ pleito, uf })), r.body);
-        this.manifest.registrarConfig(pleito, uf, lerConfigSecoes(JSON.parse(r.body.toString('utf8'))).municipios);
+        this.manifest.registrarConfig(pleito, uf, lerConfigSecoes(JSON.parse(r.body.toString('utf8')) as ConfigSecoesJson).municipios);
       }
     }
   }
 
   // Baixa o índice da seção e todos os conjuntos de arquivos, verificando cada um.
   // Falhas ficam registradas no manifest; só erros de disco sobem (e param a coleta).
-  async processarSecao(s) {
-    const falhar = (erro) => this.manifest.finalizarSecao(s, { status: 'erro', erro });
-    let r;
+  async processarSecao(s: SecaoChave): Promise<void> {
+    const falhar = (erro: string) => this.manifest.finalizarSecao(s, { status: 'erro', erro });
+    let r: RespostaHttp;
     try {
       r = await this.#get(this.urls.indiceSecao({ ciclo: this.ciclo, ...s }));
     } catch (err) {
       if (err instanceof SemConexaoError) throw err;
-      return falhar(`índice: ${err.message}`);
+      return falhar(`índice: ${mensagem(err)}`);
     }
     if (r.status !== 200) return falhar(`índice: HTTP ${r.status}`);
-    let indice;
+    let indice: IndiceSecao;
     try {
-      indice = lerIndiceSecao(JSON.parse(r.body.toString('utf8')));
+      indice = lerIndiceSecao(JSON.parse(r.body.toString('utf8')) as IndiceSecaoJson);
     } catch (err) {
-      return falhar(`índice ilegível: ${err.message}`);
+      return falhar(`índice ilegível: ${mensagem(err)}`);
     }
     const problema = problemaNoIndice(indice);
     if (problema) return falhar(`índice inválido: ${problema}`);
@@ -177,13 +215,13 @@ export class Coletor extends EventEmitter {
 
   // Primeiro o .vsc (conferido contra o hash do diretório); depois os demais, conferidos pelo sha512 no .vsc.
   // O .vsc é baixado de novo sempre que o conjunto tem pendências, porque pode já estar só no zip.
-  async #baixarConjunto(s, hash, staging, ctx) {
+  async #baixarConjunto(s: SecaoChave, hash: string, staging: string, ctx: Ctx): Promise<void> {
     const registros = this.manifest.arquivosDaSecao(s).filter((a) => a.hash === hash);
     if (registros.every((a) => a.status === 'ok')) return;
     const pasta = path.join(staging, s.zona, s.secao, hash);
 
     const regVsc = registros.find((a) => a.nome.endsWith('.vsc'));
-    let vsc = null;
+    let vsc: Buffer | null = null;
     if (regVsc) {
       vsc = await this.#baixarArquivo(s, regVsc, pasta, ctx, (buf) => (vscConfereComDiretorio(buf, hash)
         ? { verificacao: 'dir' }
@@ -198,7 +236,7 @@ export class Coletor extends EventEmitter {
       }
       await this.#baixarArquivo(s, reg, pasta, ctx, (buf, { md5Verificado }) => {
         if (vsc && vscContemSha512(vsc, buf)) return { verificacao: 'vsc' };
-        if (vsc && TIPOS_NO_VSC.has(reg.tipo)) return { erro: 'sha512 não consta no .vsc' };
+        if (vsc && TIPOS_NO_VSC.has(reg.tipo ?? '')) return { erro: 'sha512 não consta no .vsc' };
         return { verificacao: md5Verificado ? 'md5' : 'nenhuma' };
       });
     }
@@ -206,15 +244,18 @@ export class Coletor extends EventEmitter {
 
   // Devolve o conteúdo verificado, ou null depois de registrar o erro.
   // Conteúdo que não confere é baixado de novo até `tentativasVerificacao` vezes.
-  async #baixarArquivo(s, reg, pasta, ctx, verificar) {
-    let erro;
+  async #baixarArquivo(
+    s: SecaoChave, reg: ArquivoLinha, pasta: string, ctx: Ctx,
+    verificar: (buf: Buffer, info: { md5Verificado: boolean }) => Verificacao,
+  ): Promise<Buffer | null> {
+    let erro: string | undefined;
     for (let tentativa = 1; tentativa <= this.tentativasVerificacao; tentativa++) {
-      let r;
+      let r: RespostaHttp;
       try {
         r = await this.#get(reg.url);
       } catch (err) {
         if (err instanceof SemConexaoError) throw err;
-        erro = err.message;
+        erro = mensagem(err);
         break;
       }
       if (r.status !== 200) {
@@ -247,29 +288,29 @@ export class Coletor extends EventEmitter {
     return null;
   }
 
-  #contarBytes(n) {
+  #contarBytes(n: number): void {
     this.#amostras.push([this.agora(), n]);
     this.#podarAmostras();
   }
 
   #podarAmostras() {
     const limite = this.agora() - JANELA_VELOCIDADE_MS;
-    while (this.#amostras.length && this.#amostras[0][0] < limite) this.#amostras.shift();
+    while (this.#amostras.length && this.#amostras[0]![0] < limite) this.#amostras.shift();
   }
 
   // Média de bytes por segundo no último minuto.
-  velocidadeBps() {
+  velocidadeBps(): number {
     this.#podarAmostras();
     return this.#amostras.reduce((total, [, n]) => total + n, 0) / (JANELA_VELOCIDADE_MS / 1000);
   }
 
-  aguardar() {
+  aguardar(): Promise<void> {
     return this.#execucao ?? Promise.resolve();
   }
 
   // Uma execução por vez: chamar de novo enquanto roda devolve a mesma promessa.
   // Nunca rejeita: o motivo da parada fica em estado.motivoParada e nos eventos do manifest.
-  executar() {
+  executar(): Promise<void> {
     this.#execucao ??= this.#executar().finally(() => {
       this.#execucao = null;
     });
@@ -280,12 +321,12 @@ export class Coletor extends EventEmitter {
     this.#parar = true;
   }
 
-  pausar(uf) {
+  pausar(uf: string): void {
     this.manifest.definirPausa(uf, true);
     this.emit('mudou');
   }
 
-  retomar(uf) {
+  retomar(uf: string): Promise<void> {
     this.manifest.definirPausa(uf, false);
     this.#tentadas.delete(uf);
     this.emit('mudou');
@@ -304,7 +345,7 @@ export class Coletor extends EventEmitter {
         this.#planejado = true;
       }
       this.#tentadas = new Set();
-      let uf;
+      let uf: string | undefined;
       while (!this.#parar && (uf = this.#proximaUf(this.#tentadas))) {
         this.#tentadas.add(uf);
         await this.#coletarUf(uf);
@@ -313,7 +354,7 @@ export class Coletor extends EventEmitter {
       this.manifest.registrarEvento('info', null, `coleta ${this.estado.motivoParada}`);
     } catch (err) {
       const volume = ehErroDeVolume(err) || !(await existe(this.pastaDados));
-      this.estado.motivoParada = volume ? `HD inacessível: ${err.message}` : err.message;
+      this.estado.motivoParada = volume ? `HD inacessível: ${mensagem(err)}` : mensagem(err);
       try {
         this.manifest.registrarEvento('erro', this.estado.ufAtual, this.estado.motivoParada);
       } catch {
@@ -332,16 +373,16 @@ export class Coletor extends EventEmitter {
 
   // Próxima UF, na ordem de coleta, que não está pausada e ainda não foi tentada nesta execução.
   // Uma UF despausada no meio da execução entra na fila.
-  #proximaUf(tentadas) {
+  #proximaUf(tentadas: Set<string>): string | undefined {
     return this.manifest.ufs().find((u) => this.ufs.includes(u.uf) && !u.pausada && !tentadas.has(u.uf))?.uf;
   }
 
-  #deveParar(uf) {
+  #deveParar(uf: string): boolean {
     return this.#parar || this.manifest.ufPausada(uf);
   }
 
   // Município por município, os dois turnos juntos.
-  async #coletarUf(uf) {
+  async #coletarUf(uf: string): Promise<void> {
     this.estado.ufAtual = uf;
     this.emit('mudou');
     for (const { mun } of this.manifest.municipiosDaUf(uf)) {
@@ -352,7 +393,7 @@ export class Coletor extends EventEmitter {
     }
   }
 
-  async #coletarMunicipio(pleito, uf, mun, retentativa = false) {
+  async #coletarMunicipio(pleito: string, uf: string, mun: string, retentativa = false): Promise<void> {
     const municipio = this.manifest.municipio(pleito, uf, mun);
     if (!municipio) return;
     this.estado.municipioAtual = `${mun} ${municipio.nome}`;
@@ -372,7 +413,7 @@ export class Coletor extends EventEmitter {
       await rm(staging, { recursive: true, force: true });
       return;
     }
-    let bytes;
+    let bytes: number;
     try {
       ({ bytes } = await empacotarMunicipio({
         pastaStaging: staging,
@@ -393,14 +434,14 @@ export class Coletor extends EventEmitter {
   // Percorre a listagem do staging: só fica o que o manifest dá como ok e cujo conteúdo confere
   // (gravação interrompida deixa arquivo truncado; sobra de execução antiga não pode entrar no zip).
   // Seções afetadas ficam em 'erro' e são retentadas na próxima execução. Devolve quantos arquivos ficaram no staging.
-  async #conferirStaging(pleito, uf, mun, staging) {
-    const aviso = (msg) => this.manifest.registrarEvento('aviso', uf, `${pleito} ${mun}: ${msg}`);
-    const noStaging = new Set();
-    let itens = [];
+  async #conferirStaging(pleito: string, uf: string, mun: string, staging: string): Promise<number> {
+    const aviso = (msg: string) => this.manifest.registrarEvento('aviso', uf, `${pleito} ${mun}: ${msg}`);
+    const noStaging = new Set<string>();
+    let itens: import('node:fs').Dirent[] = [];
     try {
       itens = await readdir(staging, { recursive: true, withFileTypes: true });
     } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
     for (const d of itens) {
       if (!d.isFile()) continue;
@@ -410,11 +451,11 @@ export class Coletor extends EventEmitter {
         await rm(caminho, { force: true });
         continue;
       }
-      const [zona, secao, hash] = rel;
+      const [zona = '', secao = '', hash = ''] = rel;
       const s = { pleito, uf, mun, zona, secao };
       if (rel.length === 3 && d.name.endsWith('-aux.json')) {
         try {
-          lerIndiceSecao(JSON.parse((await readFile(caminho)).toString('utf8')));
+          lerIndiceSecao(JSON.parse((await readFile(caminho)).toString('utf8')) as IndiceSecaoJson);
           noStaging.add(rel.join('/'));
         } catch {
           await rm(caminho, { force: true });
@@ -449,7 +490,7 @@ export class Coletor extends EventEmitter {
     return noStaging.size;
   }
 
-  async #garantirEspaco() {
+  async #garantirEspaco(): Promise<void> {
     const livres = await this.bytesLivres(this.pastaDados);
     if (livres < this.minLivreBytes) {
       throw new EspacoInsuficienteError(

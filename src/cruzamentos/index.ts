@@ -7,8 +7,11 @@ import * as limites from './limites.ts';
 import * as turnos from './turnos.ts';
 import * as mesario from './mesario.ts';
 import * as horarios from './horarios.ts';
+import type { DuckDBConnection } from '@duckdb/node-api';
+import type { Cruzamento } from './comum.ts';
+import type { Achado, Eleicoes, Linha, Turnos } from '../tipos/dominio.ts';
 
-export const CRUZAMENTOS = [limites, turnos, mesario, horarios];
+export const CRUZAMENTOS: Cruzamento[] = [limites, turnos, mesario, horarios];
 
 const COLUNAS = [
   ['cruzamento', 'VARCHAR'], ['uf', 'VARCHAR'], ['mun', 'VARCHAR'], ['zona', 'VARCHAR'], ['secao', 'VARCHAR'],
@@ -16,15 +19,20 @@ const COLUNAS = [
   ['explicacoesCandidatas', 'VARCHAR'], ['detalhe', 'VARCHAR'],
 ];
 
-export async function rodarCruzamentos(db, { uf, turnos }) {
+export async function rodarCruzamentos(db: DuckDBConnection, { uf, turnos }: { uf: string; turnos: Turnos }): Promise<Achado[]> {
   await prepararContexto(db, { uf });
-  const todos = [];
-  for (const c of CRUZAMENTOS) todos.push(...(await c.executar(db, { uf, turnos })));
+  const todos: Achado[] = [];
+  for (const c of CRUZAMENTOS) todos.push(...((await c.executar(db, { uf, turnos })) as unknown as Achado[]));
   return todos;
 }
 
 // turnos: { primeiro, segundo } já resolvidos, ou derivados de `eleicoes` (ele-c.json) e dos pleitos nos Parquet.
-export async function analisarUF({ dados, uf, turnos, eleicoes }) {
+export async function analisarUF({ dados, uf, turnos, eleicoes }: {
+  dados: string;
+  uf: string;
+  turnos?: Turnos | undefined;
+  eleicoes?: Eleicoes | undefined;
+}): Promise<{ destino: string; rows: Achado[]; turnos: Turnos }> {
   const pasta = path.join(dados, 'parquet', uf.toUpperCase());
   const instancia = await DuckDBInstance.create(':memory:');
   const db = await instancia.connect();
@@ -32,14 +40,14 @@ export async function analisarUF({ dados, uf, turnos, eleicoes }) {
     await carregarParquet(db, pasta);
     if (!turnos) {
       const presentes = (await linhas(db, 'SELECT DISTINCT pleito FROM secoes')).map((r) => r.pleito);
-      turnos = turnosDosPleitos(eleicoes, presentes);
+      turnos = turnosDosPleitos(eleicoes!, presentes);
     }
     const rows = await rodarCruzamentos(db, { uf, turnos });
     await db.run(`CREATE TABLE achados (${COLUNAS.map(([c, t]) => `"${c}" ${t}`).join(', ')})`);
     const ap = await db.createAppender('achados');
     for (const r of rows) {
       for (const [c, t] of COLUNAS) {
-        const v = r[c];
+        const v = (r as unknown as Linha)[c];
         if (v == null) ap.appendNull();
         else if (t === 'INTEGER') ap.appendInteger(Number(v));
         else if (t === 'DOUBLE') ap.appendDouble(Number(v));
@@ -60,9 +68,12 @@ export async function analisarUF({ dados, uf, turnos, eleicoes }) {
 }
 
 // Contagens por cruzamento/sinal e as seções com maior pontuação (máximo entre os achados).
-export function resumir(rows, top = 10) {
-  const contagem = {};
-  const porSecao = new Map();
+export function resumir(rows: Achado[], top = 10): {
+  contagem: Record<string, number>;
+  ranking: { secao: string; max: number; sinais: string[]; explicacoes: string[] }[];
+} {
+  const contagem: Record<string, number> = {};
+  const porSecao = new Map<string, { secao: string; max: number; sinais: Set<string>; explicacoes: Set<string> }>();
   for (const r of rows) {
     contagem[`${r.cruzamento}/${r.sinal}`] = (contagem[`${r.cruzamento}/${r.sinal}`] ?? 0) + 1;
     const k = `${r.mun}/${r.zona}/${r.secao}`;

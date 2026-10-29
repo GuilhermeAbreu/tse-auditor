@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { PADRAO } from '../config.ts';
+import type { Opcoes, OpcoesHttp } from '../tipos/dominio.ts';
 
 // Opções da coleta ajustáveis no painel: padrões, limites e validação.
 // Pleitos e UFs são validados no ControleColeta (dependem do ele-c.json).
 
-export const LIMITES = {
+export const LIMITES: Record<string, { min?: number; max?: number; alerta?: number; maxLength?: number }> = {
   concorrencia: { min: 1, max: 64, alerta: 16 },
   'http.tentativas': { min: 1, max: 20 },
   'http.esperaBaseMs': { min: 100, max: 60_000 },
@@ -18,7 +19,7 @@ export const LIMITES = {
   intervaloPainelMs: { min: 500, max: 60_000 },
 };
 
-export function padroes({ hd = PADRAO.hd } = {}) {
+export function padroes({ hd = PADRAO.hd }: { hd?: string } = {}): Opcoes {
   return {
     concorrencia: PADRAO.concorrencia,
     http: {
@@ -38,7 +39,7 @@ export function padroes({ hd = PADRAO.hd } = {}) {
   };
 }
 
-const ROTULO = {
+const ROTULO: Record<string, string> = {
   concorrencia: 'a concorrência',
   'http.tentativas': 'as tentativas por requisição',
   'http.esperaBaseMs': 'a espera inicial',
@@ -51,23 +52,23 @@ const ROTULO = {
   intervaloPainelMs: 'o intervalo de atualização do painel',
 };
 
-function inteiroNaFaixa(valor, campo) {
-  const { min, max } = LIMITES[campo];
-  if (!Number.isInteger(valor) || valor < min || valor > max) {
+function inteiroNaFaixa(valor: unknown, campo: string): number {
+  const { min = 0, max = 0 } = LIMITES[campo]!;
+  if (!Number.isInteger(valor) || (valor as number) < min || (valor as number) > max) {
     throw new Error(`${ROTULO[campo]} precisa ser um inteiro de ${min} a ${max}: ${valor}`);
   }
-  return valor;
+  return valor as number;
 }
 
 // Completa `entrada` com `base` (configuração anterior ou padrões) e valida tudo.
 // Lança Error com mensagem em português; devolve um objeto novo, sem campos desconhecidos.
-export function normalizarOpcoes(entrada = {}, base = padroes()) {
-  const e = entrada ?? {};
-  const eHttp = e.http ?? {};
-  const de = (valor, anterior) => (valor === undefined || valor === null ? anterior : valor);
+export function normalizarOpcoes(entrada: Record<string, unknown> | null = {}, base: Opcoes = padroes()): Opcoes {
+  const e: Record<string, unknown> = entrada ?? {};
+  const eHttp = (e.http ?? {}) as Record<string, unknown>;
+  const de = (valor: unknown, anterior: unknown): unknown => (valor === undefined || valor === null ? anterior : valor);
 
-  const http = {};
-  for (const campo of ['tentativas', 'esperaBaseMs', 'esperaMaxMs', 'timeoutMs']) {
+  const http = {} as OpcoesHttp;
+  for (const campo of ['tentativas', 'esperaBaseMs', 'esperaMaxMs', 'timeoutMs'] as const) {
     http[campo] = inteiroNaFaixa(de(eHttp[campo], base.http[campo]), `http.${campo}`);
   }
   if (http.esperaMaxMs < http.esperaBaseMs) {
@@ -75,8 +76,8 @@ export function normalizarOpcoes(entrada = {}, base = padroes()) {
   }
   const userAgent = de(eHttp.userAgent, base.http.userAgent);
   if (typeof userAgent !== 'string' || !userAgent.trim()) throw new Error('o User-Agent não pode ficar vazio');
-  if (userAgent.length > LIMITES['http.userAgent'].maxLength) {
-    throw new Error(`o User-Agent pode ter no máximo ${LIMITES['http.userAgent'].maxLength} caracteres`);
+  if (userAgent.length > LIMITES['http.userAgent']!.maxLength!) {
+    throw new Error(`o User-Agent pode ter no máximo ${LIMITES['http.userAgent']!.maxLength} caracteres`);
   }
   if (!/^[\x20-\x7e]+$/.test(userAgent)) throw new Error('o User-Agent só pode ter caracteres ASCII visíveis (sem acentos)');
   http.userAgent = userAgent.trim();
@@ -86,8 +87,8 @@ export function normalizarOpcoes(entrada = {}, base = padroes()) {
     throw new Error(`o caminho do HD precisa ser absoluto: ${JSON.stringify(hd)}`);
   }
 
-  const opcoes = { concorrencia: null, http };
-  for (const campo of ['concorrencia', 'tentativasVerificacao', 'limiteFalhasRede', 'minLivreGB', 'intervaloCommitMs', 'intervaloPainelMs']) {
+  const opcoes = { concorrencia: 0, http } as Opcoes;
+  for (const campo of ['concorrencia', 'tentativasVerificacao', 'limiteFalhasRede', 'minLivreGB', 'intervaloCommitMs', 'intervaloPainelMs'] as const) {
     opcoes[campo] = inteiroNaFaixa(de(e[campo], base[campo]), campo);
   }
   const analisar = de(e.analisarAoConcluir, base.analisarAoConcluir ?? true);

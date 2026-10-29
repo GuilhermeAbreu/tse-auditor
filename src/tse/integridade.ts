@@ -5,27 +5,27 @@ import { createHash } from 'node:crypto';
 //   o .vsc (ASN.1 assinado) contém o sha512 de bu.dat, rdv.dat e log.jez
 // A verificação da assinatura do .vsc fica na etapa de verificação, não na coleta.
 
-export const md5 = (buf) => createHash('md5').update(buf).digest('hex');
-export const sha512Hex = (buf) => createHash('sha512').update(buf).digest('hex');
+export const md5 = (buf: Buffer): string => createHash('md5').update(buf).digest('hex');
+export const sha512Hex = (buf: Buffer): string => createHash('sha512').update(buf).digest('hex');
 
-export function digestoDoDiretorio(hashDiretorio) {
+export function digestoDoDiretorio(hashDiretorio: string): Buffer {
   const base64 = Buffer.from(hashDiretorio, 'hex').toString('ascii');
   // O TSE usa '-' no lugar de '/' (confirmado nas fixtures); '_' no lugar de '+' é suposição, ainda não visto.
   return Buffer.from(base64.replaceAll('-', '/').replaceAll('_', '+'), 'base64');
 }
 
-export function vscConfereComDiretorio(vsc, hashDiretorio) {
+export function vscConfereComDiretorio(vsc: Buffer, hashDiretorio: string): boolean {
   const esperado = digestoDoDiretorio(hashDiretorio);
   return esperado.length === 32 && createHash('sha256').update(vsc).digest().equals(esperado);
 }
 
 // Não liga o digest a um nome de arquivo: o parse ASN.1 da etapa de verificação é que deve fazer isso.
-export function vscContemSha512(vsc, conteudo) {
+export function vscContemSha512(vsc: Buffer, conteudo: Buffer): boolean {
   return vsc.includes(createHash('sha512').update(conteudo).digest());
 }
 
 // ETag do armazenamento do TSE é o MD5 do arquivo; ETag de upload multipart ("...-N") não é.
-export function md5DoEtag(etag) {
+export function md5DoEtag(etag: string | null | undefined): string | null {
   const m = /^(?:W\/)?"?([0-9a-f]{32})"?$/i.exec(etag ?? '');
-  return m ? m[1].toLowerCase() : null;
+  return m ? m[1]!.toLowerCase() : null;
 }

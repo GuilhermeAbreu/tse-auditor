@@ -1,7 +1,10 @@
 // Lê o -aux.json da seção. Cada item de "hashes" é um conjunto de arquivos de uma urna;
 // urna substituída (contingência) gera mais de um conjunto, e todos são mantidos.
 // 2026 usa "arq: [{ nm, tp }]"; 2022 usava "nmarq: [nome]".
-export function lerIndiceSecao(json) {
+import type { IndiceSecao } from '../tipos/dominio.ts';
+import type { IndiceSecaoJson } from '../tipos/tse.ts';
+
+export function lerIndiceSecao(json: IndiceSecaoJson): IndiceSecao {
   return {
     status: json.st ?? null,
     conjuntos: (json.hashes ?? []).map((h) => ({

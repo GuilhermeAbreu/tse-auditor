@@ -5,29 +5,34 @@ import { once } from 'node:events';
 import { finished } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 import { bytesLivres as bytesLivresPadrao } from './disco.ts';
 
+type ErroNode = NodeJS.ErrnoException;
+
 // Erros de sistema (EIO, ENOTCONN, EMFILE, EACCES...) trazem code; os do yauzl, de formato, não.
-export function ehErroDeFormatoZip(err) {
-  return !err?.code;
+export function ehErroDeFormatoZip(err: unknown): boolean {
+  return !(err as ErroNode | undefined)?.code;
 }
 
-const abrirZip = promisify(yauzl.open);
+const abrirZip = promisify(yauzl.open) as (caminho: string, opcoes: yauzl.Options) => Promise<yauzl.ZipFile>;
 
 export class ZipCorrompidoError extends Error {
-  constructor(caminhoZip, causa) {
+  caminhoZip: string;
+
+  constructor(caminhoZip: string, causa: Error) {
     super(`zip existente ilegível (${causa.message}): ${caminhoZip}`);
     this.caminhoZip = caminhoZip;
     this.cause = causa;
   }
 }
 
-async function listarArquivos(pasta) {
+async function listarArquivos(pasta: string): Promise<string[]> {
   let itens;
   try {
     itens = await readdir(pasta, { recursive: true, withFileTypes: true });
   } catch (err) {
-    if (err.code === 'ENOENT') return [];
+    if ((err as ErroNode).code === 'ENOENT') return [];
     throw err;
   }
   return itens
@@ -36,12 +41,12 @@ async function listarArquivos(pasta) {
     .sort();
 }
 
-async function lerEntradas(caminhoZip) {
+async function lerEntradas(caminhoZip: string): Promise<{ zip: yauzl.ZipFile; entradas: yauzl.Entry[] }> {
   const zip = await abrirZip(caminhoZip, { lazyEntries: true, autoClose: false });
-  const entradas = [];
+  const entradas: yauzl.Entry[] = [];
   try {
-    await new Promise((ok, falha) => {
-      zip.on('entry', (e) => {
+    await new Promise<void>((ok, falha) => {
+      zip.on('entry', (e: yauzl.Entry) => {
         entradas.push(e);
         zip.readEntry();
       });
@@ -58,19 +63,19 @@ async function lerEntradas(caminhoZip) {
 
 // Nomes das entradas de um zip (só o diretório central). Zip ausente ou ilegível dá conjunto vazio;
 // o caso ilegível é tratado por empacotarMunicipio (ZipCorrompidoError).
-export async function listarNomesZip(caminhoZip) {
+export async function listarNomesZip(caminhoZip: string): Promise<Set<string>> {
   let lido;
   try {
     lido = await lerEntradas(caminhoZip);
   } catch (err) {
-    if (err.code === 'ENOENT' || ehErroDeFormatoZip(err)) return new Set();
+    if ((err as ErroNode).code === 'ENOENT' || ehErroDeFormatoZip(err)) return new Set();
     throw err;
   }
   lido.zip.close();
   return new Set(lido.entradas.map((e) => e.fileName));
 }
 
-async function conferirZip(caminho, esperado) {
+async function conferirZip(caminho: string, esperado: Map<string, number>): Promise<void> {
   const { zip, entradas } = await lerEntradas(caminho);
   zip.close();
   const problemas = [];
@@ -81,7 +86,7 @@ async function conferirZip(caminho, esperado) {
   if (problemas.length) throw new Error(`zip inconsistente ${caminho}: ${problemas.join('; ')}`);
 }
 
-async function sincronizarPasta(pasta) {
+async function sincronizarPasta(pasta: string): Promise<void> {
   try {
     const d = await open(pasta, 'r');
     try {
@@ -91,7 +96,7 @@ async function sincronizarPasta(pasta) {
     }
   } catch (err) {
     // Alguns sistemas de arquivos não suportam fsync de diretório.
-    if (!['EINVAL', 'EISDIR', 'EPERM', 'ENOTSUP', 'ENOSYS'].includes(err.code)) throw err;
+    if (!['EINVAL', 'EISDIR', 'EPERM', 'ENOTSUP', 'ENOSYS'].includes((err as ErroNode).code ?? '')) throw err;
   }
 }
 
@@ -100,9 +105,14 @@ async function sincronizarPasta(pasta) {
 // são copiadas e as do staging têm prioridade. Escreve em .part, confere, renomeia e apaga o staging.
 export async function empacotarMunicipio({
   pastaStaging, caminhoZip, bytesLivres = bytesLivresPadrao, minLivreBytes = 0,
-}) {
+}: {
+  pastaStaging: string;
+  caminhoZip: string;
+  bytesLivres?: (pasta: string) => Promise<number>;
+  minLivreBytes?: number;
+}): Promise<{ entradas: number; bytes: number }> {
   const novos = await listarArquivos(pastaStaging);
-  const esperado = new Map();
+  const esperado = new Map<string, number>();
   let tamanhoStaging = 0;
   for (const nome of novos) {
     const { size } = await stat(path.join(pastaStaging, nome));
@@ -110,25 +120,25 @@ export async function empacotarMunicipio({
     tamanhoStaging += size;
   }
 
-  let antigo = null;
+  let antigo: Awaited<ReturnType<typeof lerEntradas>> | null = null;
   let tamanhoAntigo = 0;
   try {
     tamanhoAntigo = (await stat(caminhoZip)).size;
     antigo = await lerEntradas(caminhoZip);
   } catch (err) {
-    if (err.code === 'ENOENT') {
+    if ((err as ErroNode).code === 'ENOENT') {
       // sem zip anterior
     } else if (!ehErroDeFormatoZip(err)) {
       throw err;
     } else {
       await rename(caminhoZip, `${caminhoZip}.corrompido-${Date.now()}`);
-      throw new ZipCorrompidoError(caminhoZip, err);
+      throw new ZipCorrompidoError(caminhoZip, err as Error);
     }
   }
 
   const temporario = `${caminhoZip}.part`;
-  let fh;
-  let leitura = null;
+  let fh: import('node:fs/promises').FileHandle | null | undefined;
+  let leitura: Readable | null = null;
   try {
     await mkdir(path.dirname(caminhoZip), { recursive: true });
     const necessario = tamanhoAntigo + tamanhoStaging + minLivreBytes;
@@ -139,17 +149,17 @@ export async function empacotarMunicipio({
     fh = await open(temporario, 'w');
     const zip = new yazl.ZipFile();
     const saida = fh.createWriteStream({ autoClose: false });
-    const falhou = new Promise((_, rejeitar) => {
+    const falhou = new Promise<never>((_, rejeitar) => {
       zip.on('error', rejeitar);
       zip.outputStream.on('error', rejeitar);
       saida.on('error', rejeitar);
     });
     falhou.catch(() => {});
-    const aguardar = (x) => Promise.race([finished(x), falhou]);
+    const aguardar = (x: Readable) => Promise.race([finished(x), falhou]);
     try {
       zip.outputStream.pipe(saida);
       if (antigo) {
-        const abrir = promisify(antigo.zip.openReadStream.bind(antigo.zip));
+        const abrir = promisify(antigo.zip.openReadStream.bind(antigo.zip)) as (e: yauzl.Entry) => Promise<Readable>;
         for (const e of antigo.entradas) {
           if (e.fileName.endsWith('/') || esperado.has(e.fileName)) continue;
           esperado.set(e.fileName, e.uncompressedSize);
@@ -167,7 +177,7 @@ export async function empacotarMunicipio({
     } catch (err) {
       leitura?.destroy();
       saida.destroy();
-      zip.outputStream.destroy();
+      (zip.outputStream as Readable).destroy();
       throw err;
     }
     await fh.close();

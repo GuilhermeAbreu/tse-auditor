@@ -8,12 +8,29 @@ import { fileURLToPath } from 'node:url';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { desloc, linhas, lit, turnosDosPleitos } from '../cruzamentos/comum.ts';
 import { UFS } from '../ufs.ts';
+import type { Eleicoes, EstadoPainel, Linha, Turnos } from '../tipos/dominio.ts';
+
+export type EstadoJob = 'na fila' | 'rodando' | 'concluído' | 'erro';
+export interface Job {
+  id: number;
+  uf: string;
+  pasta: string;
+  origem: string;
+  estado: EstadoJob;
+  etapa: 'extrair' | 'analisar' | null;
+  progresso: string | null;
+  erro: string | null;
+  inicio: string | null;
+  fim: string | null;
+}
+export type TurnosDe = (dados: string, uf: string) => Promise<Turnos | undefined>;
+export type Rodar = (args: string[], aoProgresso?: (linha: string) => void) => Promise<void>;
 
 const CLI = fileURLToPath(new URL('../cli.ts', import.meta.url));
 const HAB = "('hab_biometrica', 'hab_ano_nascimento', 'hab_mesario', 'hab_mesario_nao_associado')";
 
-let instancia = null;
-async function consultar(sql) {
+let instancia: DuckDBInstance | null = null;
+async function consultar(sql: string): Promise<Linha[]> {
   instancia ??= await DuckDBInstance.create(':memory:', { memory_limit: '1GB' });
   const db = await instancia.connect();
   try {
@@ -23,19 +40,19 @@ async function consultar(sql) {
   }
 }
 
-const existe = (f) => access(f).then(() => true, () => false);
-const arquivo = (dados, uf, nome) => path.join(dados, 'parquet', uf.toUpperCase(), `${nome}.parquet`);
-const parquet = (dados, uf, nome) => `read_parquet(${lit(arquivo(dados, uf, nome))})`;
+const existe = (f: string) => access(f).then(() => true, () => false);
+const arquivo = (dados: string, uf: string, nome: string) => path.join(dados, 'parquet', uf.toUpperCase(), `${nome}.parquet`);
+const parquet = (dados: string, uf: string, nome: string) => `read_parquet(${lit(arquivo(dados, uf, nome))})`;
 
 // UFs com Parquet extraído e, se houver, os achados.
-export async function listarUfs(dados) {
-  let pastas = [];
+export async function listarUfs(dados: string): Promise<Linha[]> {
+  let pastas: string[] = [];
   try {
     pastas = await readdir(path.join(dados, 'parquet'));
   } catch {
     return [];
   }
-  const r = [];
+  const r: Linha[] = [];
   for (const UF of pastas.sort()) {
     const uf = UF.toLowerCase();
     if (!UFS.includes(uf) || !(await existe(arquivo(dados, uf, 'secoes')))) continue;
@@ -53,10 +70,12 @@ export async function listarUfs(dados) {
   return r;
 }
 
-const lista = (col) => `list_sort(list_distinct(list_filter(flatten(list(string_split(coalesce(${col}, ''), ','))), lambda x: x <> '')))`;
+const lista = (col: string) => `list_sort(list_distinct(list_filter(flatten(list(string_split(coalesce(${col}, ''), ','))), lambda x: x <> '')))`;
 
 // Seções por pontuação máxima; com `sinal`, só as que têm esse sinal (a lista mostra todos os sinais da seção).
-export async function ranking(dados, uf, { sinal = '', limite = 200 } = {}) {
+export async function ranking(
+  dados: string, uf: string, { sinal = '', limite = 200 }: { sinal?: string; limite?: number | string } = {},
+): Promise<{ sinais: Linha[]; secoes: Linha[] }> {
   if (!(await existe(arquivo(dados, uf, 'achados')))) return { sinais: [], secoes: [] };
   const fonte = parquet(dados, uf, 'achados');
   const sinais = await consultar(`SELECT sinal, count(*)::INTEGER n FROM ${fonte} GROUP BY sinal ORDER BY n DESC, sinal`);
@@ -72,9 +91,11 @@ export async function ranking(dados, uf, { sinal = '', limite = 200 } = {}) {
 // Uma seção: números de cada turno, votos de presidente (BU), achados e a linha do tempo do dia da eleição
 // (votos por 10 min, pela habilitação de cada voto: último evento de habilitação entre o voto anterior e ele;
 // sem evento = mesário, como no cruzamento mesario).
-export async function detalharSecao(dados, uf, { mun, zona, secao }) {
+export async function detalharSecao(
+  dados: string, uf: string, { mun, zona, secao }: { mun: string; zona: string; secao: string },
+): Promise<Linha> {
   const onde = `upper(uf) = ${lit(uf.toUpperCase())} AND mun = ${lit(mun)} AND zona = ${lit(zona)} AND secao = ${lit(secao)}`;
-  const ts = (c) => `strftime(${c}, '%Y-%m-%d %H:%M:%S') ${c}`;
+  const ts = (c: string) => `strftime(${c}, '%Y-%m-%d %H:%M:%S') ${c}`;
   const turnos = await consultar(`SELECT pleito, status, local, aptos, comparecimento, abstencao,
       qtdHabilitacaoBiometrica, qtdHabilitacaoMesario, qtdHabilitacaoAnoNascimento, tipoUrna, substituida,
       secoesAgregadas, agregadaEm, inconsistencias, logDia, ${ts('abertura')}, ${ts('encerramento')},
@@ -111,7 +132,7 @@ export async function detalharSecao(dados, uf, { mun, zona, secao }) {
 }
 
 // Pleitos baixados para a UF (pastas raw/<UF>/<pleito>).
-export async function pleitosBaixados(dados, uf) {
+export async function pleitosBaixados(dados: string, uf: string): Promise<string[]> {
   try {
     return (await readdir(path.join(dados, 'raw', uf.toUpperCase()))).filter((p) => /^\d+$/.test(p));
   } catch {
@@ -120,15 +141,15 @@ export async function pleitosBaixados(dados, uf) {
 }
 
 // Roda `node src/cli.ts <args>`; progresso pelas linhas do stderr (o extrair usa \r).
-export function rodarCli(args, aoProgresso = () => {}) {
-  return new Promise((ok, falha) => {
+export function rodarCli(args: string[], aoProgresso: (linha: string) => void = () => {}): Promise<void> {
+  return new Promise<void>((ok, falha) => {
     const filho = spawn(process.execPath, [CLI, ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
     let resto = '';
     let ultima = '';
     filho.stderr.setEncoding('utf8');
-    filho.stderr.on('data', (t) => {
+    filho.stderr.on('data', (t: string) => {
       const partes = (resto + t).split(/[\r\n]/);
-      resto = partes.pop();
+      resto = partes.pop()!;
       for (const p of partes) if (p.trim()) aoProgresso((ultima = p.trim()));
     });
     filho.on('error', falha);
@@ -139,23 +160,26 @@ export function rodarCli(args, aoProgresso = () => {}) {
 // Fila de jobs extrair + analisar, um por vez. `turnosDe(dados, uf)` devolve { primeiro, segundo } ou undefined
 // (o CLI então busca o ele-c.json).
 export class FilaAnalise {
-  #jobs = [];
-  #rodando = null;
+  #jobs: Job[] = [];
+  #rodando: { id: number; promessa: Promise<void> } | null = null;
   #seq = 0;
-  #vistos = new Map(); // uf -> último status de coleta visto (para a automação)
+  #vistos = new Map<string, string>();
+  declare turnosDe: TurnosDe;
+  declare rodar: Rodar;
+  declare maxHistorico: number; // uf -> último status de coleta visto (para a automação)
 
-  constructor({ turnosDe = async () => undefined, rodar = rodarCli, maxHistorico = 20 } = {}) {
+  constructor({ turnosDe = async () => undefined, rodar = rodarCli, maxHistorico = 20 }: { turnosDe?: TurnosDe; rodar?: Rodar; maxHistorico?: number } = {}) {
     Object.assign(this, { turnosDe, rodar, maxHistorico });
   }
 
-  listar() {
+  listar(): { rodando: number | null; jobs: Job[] } {
     return { rodando: this.#rodando?.id ?? null, jobs: this.#jobs.map((j) => ({ ...j })) };
   }
 
-  enfileirar(uf, dados, origem = 'painel') {
+  enfileirar(uf: string, dados: string, origem = 'painel'): Job {
     const pendente = this.#jobs.find((j) => j.uf === uf && (j.estado === 'na fila' || j.estado === 'rodando'));
     if (pendente) return pendente;
-    const job = { id: ++this.#seq, uf, pasta: dados, origem, estado: 'na fila', etapa: null, progresso: null, erro: null, inicio: null, fim: null };
+    const job: Job = { id: ++this.#seq, uf, pasta: dados, origem, estado: 'na fila', etapa: null, progresso: null, erro: null, inicio: null, fim: null };
     this.#jobs.push(job);
     while (this.#jobs.length > this.maxHistorico) {
       const i = this.#jobs.findIndex((j) => j.estado !== 'na fila' && j.estado !== 'rodando');
@@ -166,11 +190,11 @@ export class FilaAnalise {
     return job;
   }
 
-  aguardar() {
+  aguardar(): Promise<void> {
     return this.#rodando?.promessa ?? Promise.resolve();
   }
 
-  async #executar(job, dados) {
+  async #executar(job: Job, dados: string): Promise<void> {
     job.estado = 'rodando';
     job.inicio = new Date().toISOString();
     try {
@@ -184,12 +208,12 @@ export class FilaAnalise {
       job.estado = 'concluído';
     } catch (err) {
       job.estado = 'erro';
-      job.erro = err.message;
+      job.erro = (err as Error).message;
     }
     job.fim = new Date().toISOString();
   }
 
-  #proximo() {
+  #proximo(): void {
     if (this.#rodando) return;
     const job = this.#jobs.find((j) => j.estado === 'na fila');
     if (!job) return;
@@ -201,17 +225,17 @@ export class FilaAnalise {
   }
 
   // Automação: UF que passou a baixado/baixado_com_erros durante esta execução entra na fila.
-  observar(estado, dados, ligado) {
+  observar(estado: Pick<EstadoPainel, 'ufs'> | null | undefined, dados: string | null | undefined, ligado: boolean): void {
     for (const u of estado?.ufs ?? []) {
       const antes = this.#vistos.get(u.uf);
       this.#vistos.set(u.uf, u.status);
-      const pronto = (s) => s === 'baixado' || s === 'baixado_com_erros';
+      const pronto = (s: string | undefined) => s === 'baixado' || s === 'baixado_com_erros';
       if (ligado && dados && antes !== undefined && !pronto(antes) && pronto(u.status)) this.enfileirar(u.uf, dados, 'automática');
     }
   }
 }
 
-export const turnosPelasEleicoes = (eleicoes) => async (dados, uf) => {
+export const turnosPelasEleicoes = (eleicoes: Eleicoes | null | undefined): TurnosDe => async (dados, uf) => {
   if (!eleicoes) return undefined;
   const t = turnosDosPleitos(eleicoes, await pleitosBaixados(dados, uf));
   return t.primeiro == null ? undefined : t;
