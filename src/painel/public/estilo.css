@@ -11,7 +11,9 @@ body { margin: 0 auto; max-width: 1100px; padding: 16px; background: var(--fundo
        font: 14px/1.4 system-ui, sans-serif; }
 h1 { margin: 0; font-size: 22px; }
 h2 { font-size: 16px; margin-top: 28px; }
-#situacao { color: var(--suave); margin: 4px 0 16px; }
+#situacao { color: var(--suave); margin: 4px 8px 16px 0; }
+#situacao.erro { color: var(--erro); font-weight: 600; }
+[hidden] { display: none; }
 .cartoes { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .cartao { background: var(--cartao); border: 1px solid var(--borda); border-radius: 8px; padding: 12px; }
 .cartao span { display: block; color: var(--suave); font-size: 12px; }
@@ -20,6 +22,7 @@ table { width: 100%; border-collapse: collapse; background: var(--cartao); font-
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--borda); }
 tr.baixando td:first-child { border-left: 3px solid var(--ativo); }
 tr.baixado td:nth-child(2) { color: var(--ok); }
+tr.baixado_com_erros td:nth-child(2) { color: var(--erro); }
 tr.pausada { color: var(--suave); }
 .erro, li.erro { color: var(--erro); }
 progress { width: 120px; vertical-align: middle; }

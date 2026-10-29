@@ -64,14 +64,44 @@ async function montarColeta(opcoes, { templates, pleitos: todos }, http, concorr
   return { manifest, coletor, obterEstado, dados };
 }
 
+function fecharManifest(manifest) {
+  try {
+    manifest.fechar();
+  } catch (err) {
+    console.error(`erro ao fechar o manifest: ${err.message}`);
+  }
+}
+
+// Primeiro Ctrl-C: parada ordenada. Segundo: força a saída (fecha o manifest se der).
+function tratarCtrlC(coletor, manifest, aoParar) {
+  let vezes = 0;
+  process.on('SIGINT', async () => {
+    vezes++;
+    if (vezes > 1) {
+      fecharManifest(manifest);
+      process.exit(130);
+    }
+    console.log('encerrando: aguardando o município atual; Ctrl-C de novo força a saída');
+    coletor.parar();
+    aoParar?.();
+  });
+}
+
 async function coletar({ manifest, coletor, obterEstado, dados }) {
   console.log(`dados em ${dados}`);
-  const relogio = setInterval(async () => console.log(linhaDeProgresso(await obterEstado())), 10_000);
-  process.once('SIGINT', () => {
-    console.log('parando: aguardando as seções em andamento…');
-    coletor.parar();
-  });
+  let ativo = true;
+  const relogio = setInterval(async () => {
+    if (!ativo) return;
+    try {
+      const estado = await obterEstado();
+      if (ativo) console.log(linhaDeProgresso(estado));
+    } catch (err) {
+      console.error(`erro ao ler o progresso: ${err.message}`);
+    }
+  }, 10_000);
+  tratarCtrlC(coletor, manifest);
   await coletor.executar();
+  ativo = false;
   clearInterval(relogio);
   const estado = await obterEstado();
   console.log(linhaDeProgresso(estado));
@@ -79,23 +109,35 @@ async function coletar({ manifest, coletor, obterEstado, dados }) {
     console.log(`projeção do total: ${fmtBytes(estado.disco.projecaoBytes)}${estado.disco.projecaoPreliminar ? ' (preliminar)' : ''}`);
   }
   console.log(`fim: ${estado.coleta.motivoParada}`);
-  manifest.fechar();
+  fecharManifest(manifest);
   if (estado.coleta.motivoParada !== 'concluída') process.exitCode = 1;
 }
 
 async function painel({ manifest, coletor, obterEstado }, opcoes) {
   const porta = Number(opcoes.porta ?? PADRAO.porta);
   const servidor = criarPainel({ obterEstado, coletor });
-  await new Promise((r) => servidor.listen(porta, '127.0.0.1', r));
+  try {
+    await new Promise((resolve, reject) => {
+      servidor.once('error', reject);
+      servidor.listen(porta, '127.0.0.1', resolve);
+    });
+  } catch (err) {
+    fecharManifest(manifest);
+    throw err.code === 'EADDRINUSE' ? new Error(`porta ${porta} em uso; use --porta`) : err;
+  }
   console.log(`painel em http://localhost:${porta}`);
-  process.once('SIGINT', async () => {
-    console.log('encerrando: aguardando as seções em andamento…');
-    coletor.parar();
+  tratarCtrlC(coletor, manifest, async () => {
     await coletor.aguardar();
-    manifest.fechar();
+    fecharManifest(manifest);
     process.exit(0);
   });
   if (!opcoes['sem-iniciar']) coletor.executar();
+}
+
+function inteiroPositivo(valor, nome) {
+  if (valor === undefined) return undefined;
+  if (!/^\d+$/.test(valor) || Number(valor) < 1) throw new Error(`${nome} precisa ser um inteiro positivo: ${valor}`);
+  return Number(valor);
 }
 
 async function main(argv) {
@@ -117,7 +159,9 @@ async function main(argv) {
     process.exitCode = 1;
     return;
   }
-  const concorrencia = Number(opcoes.concorrencia ?? PADRAO.concorrencia);
+  const concorrencia = inteiroPositivo(opcoes.concorrencia, '--concorrencia') ?? PADRAO.concorrencia;
+  const porta = inteiroPositivo(opcoes.porta, '--porta');
+  if (porta !== undefined) opcoes.porta = String(porta);
   const http = new HttpClient({ concorrencia, userAgent: PADRAO.userAgent });
   const eleicoes = await buscarEleicoes(http, PADRAO);
   if (comando === 'eleicoes') return listarEleicoes(eleicoes);

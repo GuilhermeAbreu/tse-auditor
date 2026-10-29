@@ -46,3 +46,8 @@ test('coletar sem --dados recusa HD ausente', async (t) => {
     return true;
   });
 });
+
+test('--concorrencia e --porta inválidos são recusados', async (t) => {
+  await assert.rejects(cli(t, ['coletar', '--pleito', '3220', '--concorrencia', '0']), /inteiro positivo/);
+  await assert.rejects(cli(t, ['painel', '--pleito', '3220', '--porta', 'abc']), /inteiro positivo/);
+});
