@@ -121,7 +121,8 @@ export class Manifest {
 
   fechar() {
     try {
-      this.descarregar();
+      // Com erro de commit guardado, o rollback acontece ao fechar.
+      if (!this.#erroPendente) this.descarregar();
     } finally {
       clearTimeout(this.#timer);
       this.#timer = null;
@@ -129,31 +130,46 @@ export class Manifest {
     }
   }
 
-  // Confirma a transação aberta, se houver.
-  descarregar() {
-    clearTimeout(this.#timer);
-    this.#timer = null;
-    if (this.db.open && this.db.inTransaction) this.db.exec('COMMIT');
+  // Erro de commit guardado: só some reabrindo o Manifest depois que o disco voltar.
+  get erro() {
+    return this.#erroPendente ?? null;
   }
 
-  #verificarErro() {
-    const err = this.#erroPendente;
-    if (err) {
-      this.#erroPendente = null;
+  // Confirma a transação aberta, se houver.
+  descarregar() {
+    this.#verificarErro();
+    clearTimeout(this.#timer);
+    this.#timer = null;
+    if (!this.db.open || !this.db.inTransaction) return;
+    try {
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try {
+        if (this.db.inTransaction) this.db.exec('ROLLBACK');
+      } catch {
+        // o disco pode ter sumido; o erro original é o que importa
+      }
+      this.#erroPendente = err;
       throw err;
     }
   }
 
+  #verificarErro() {
+    if (this.#erroPendente) throw this.#erroPendente;
+  }
+
   #abrirTransacao() {
     this.#verificarErro();
-    if (this.db.inTransaction) return;
-    this.db.exec('BEGIN');
-    this.#gravacoes = 0;
-    this.#timer = setTimeout(() => {
+    if (!this.db.inTransaction) {
+      this.db.exec('BEGIN');
+      this.#gravacoes = 0;
+    }
+    this.#timer ??= setTimeout(() => {
+      this.#timer = null;
       try {
         this.descarregar();
-      } catch (err) {
-        this.#erroPendente = err;
+      } catch {
+        // já guardado em #erroPendente
       }
     }, this.#intervaloCommitMs).unref();
   }
@@ -171,7 +187,6 @@ export class Manifest {
   }
 
   ufs() {
-    this.#verificarErro();
     return this.#st.ufs.all();
   }
 
@@ -182,7 +197,6 @@ export class Manifest {
   }
 
   ufPausada(uf) {
-    this.#verificarErro();
     return this.#st.ufPausada.get(uf)?.pausada === 1;
   }
 
@@ -207,22 +221,18 @@ export class Manifest {
   }
 
   municipiosDaUf(uf) {
-    this.#verificarErro();
     return this.#st.municipiosDaUf.all(uf);
   }
 
   municipio(pleito, uf, mun) {
-    this.#verificarErro();
     return this.#st.municipio.get(pleito, uf, mun);
   }
 
   secoesPendentes(pleito, uf, mun) {
-    this.#verificarErro();
     return this.#st.secoesPendentes.all(pleito, uf, mun);
   }
 
   secao(s) {
-    this.#verificarErro();
     return this.#st.secao.get(chave(s));
   }
 
@@ -240,7 +250,6 @@ export class Manifest {
   }
 
   arquivosDaSecao(s) {
-    this.#verificarErro();
     return this.#st.arquivosDaSecao.all(chave(s));
   }
 
@@ -280,7 +289,6 @@ export class Manifest {
   }
 
   eventos(limite) {
-    this.#verificarErro();
     return this.#st.eventos.all(limite);
   }
 
@@ -293,7 +301,6 @@ export class Manifest {
   }
 
   errosRecentes(limite) {
-    this.#verificarErro();
     return this.#st.errosRecentes.all(limite);
   }
 }

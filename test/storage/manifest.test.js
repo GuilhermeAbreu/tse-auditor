@@ -141,7 +141,7 @@ test('escritas só ficam visíveis para outra conexão após descarregar', async
   assert.equal(lerOutra(), 1);
 });
 
-test('erro no commit por timer é lançado na próxima chamada e depois some', async (t) => {
+test('commit com falha faz rollback e deixa erro persistente só para escritas', async (t) => {
   const { m } = await novoManifest(t, { intervaloCommitMs: 10 });
   m.registrarUfs(['ac']);
   const exec = m.db.exec.bind(m.db);
@@ -154,8 +154,14 @@ test('erro no commit por timer é lançado na próxima chamada e depois some', a
     return exec(sql);
   };
   await new Promise((ok) => setTimeout(ok, 60));
-  assert.throws(() => m.ufs(), /HD desconectado/);
-  assert.equal(m.ufs().length, 1);
+  assert.equal(m.db.inTransaction, false);
+  assert.equal(m.ufs().length, 0, 'leituras continuam funcionando');
+  for (let i = 0; i < 2; i++) {
+    assert.throws(() => m.registrarEvento('erro', 'ac', 'x'), /HD desconectado/);
+    assert.throws(() => m.marcarArquivo(S77, 'h1', 'a', { status: 'ok' }), /HD desconectado/);
+  }
+  assert.match(m.erro.message, /HD desconectado/);
+  m.fechar();
 });
 
 test('fechar grava a fila pendente', async (t) => {
