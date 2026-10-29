@@ -7,15 +7,23 @@
     "node": ">=22.12"
   },
   "bin": {
-    "tse-auditor": "src/cli.js"
+    "tse-auditor": "src/cli.ts"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.ts\"",
+    "tipos": "tsc && tsc -p src/painel/public"
   },
   "dependencies": {
     "@duckdb/node-api": "^2.0.0-r.1",
     "better-sqlite3": "^13.0.3",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.5",
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1",
+    "typescript": "^7.0.2"
   }
 }
