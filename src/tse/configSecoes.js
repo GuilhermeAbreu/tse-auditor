@@ -7,7 +7,7 @@ export function lerConfigSecoes(json) {
     municipios: abr.mu.map((m) => ({
       mun: m.cd,
       nome: m.nm,
-      secoes: m.zon.flatMap((z) => z.sec.map((s) => ({ zona: z.cd, secao: s.ns, principal: s.nsp ?? null }))),
+      secoes: m.zon.flatMap((z) => z.sec.map((s) => ({ zona: z.cd, secao: s.ns, principal: s.nsp && s.nsp !== s.ns ? s.nsp : null }))),
     })),
   };
 }

@@ -42,19 +42,19 @@ export async function iniciarFakeTse({ falhas = {} } = {}) {
         const alvo = path.resolve(RAIZ_FIXTURES, `.${caminho}`);
         if (!alvo.startsWith(RAIZ_FIXTURES + path.sep)) throw new Error('fora da raiz');
         corpo = await readFile(alvo);
-    } catch {
-      res.writeHead(404);
-      res.end('NoSuchKey');
-      return;
-    }
-    let etag = md5(corpo);
-    if (falha === 'corromper' || falha === 'corromperComEtag') {
-      corpo = Buffer.from(corpo);
-      corpo[0] ^= 0xff;
-      if (falha === 'corromperComEtag') etag = md5(corpo);
-    }
-    res.writeHead(200, { etag: `"${etag}"`, 'content-length': corpo.length });
-    res.end(corpo);
+      } catch {
+        res.writeHead(404);
+        res.end('NoSuchKey');
+        return;
+      }
+      let etag = md5(corpo);
+      if (falha === 'corromper' || falha === 'corromperComEtag') {
+        corpo = Buffer.from(corpo);
+        corpo[0] ^= 0xff;
+        if (falha === 'corromperComEtag') etag = md5(corpo);
+      }
+      res.writeHead(200, { etag: `"${etag}"`, 'content-length': corpo.length });
+      res.end(corpo);
     } catch {
       if (!res.headersSent) res.writeHead(400);
       res.end();

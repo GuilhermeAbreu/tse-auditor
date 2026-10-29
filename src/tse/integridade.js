@@ -19,6 +19,7 @@ export function vscConfereComDiretorio(vsc, hashDiretorio) {
   return esperado.length === 32 && createHash('sha256').update(vsc).digest().equals(esperado);
 }
 
+// Não liga o digest a um nome de arquivo: o parse ASN.1 da etapa de verificação é que deve fazer isso.
 export function vscContemSha512(vsc, conteudo) {
   return vsc.includes(createHash('sha512').update(conteudo).digest());
 }

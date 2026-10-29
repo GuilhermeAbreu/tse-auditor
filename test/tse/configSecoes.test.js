@@ -23,3 +23,8 @@ test('lê municípios, zonas e seções, marcando as agregadas', async () => {
 test('recusa config sem "abr"', () => {
   assert.throws(() => lerConfigSecoes({}), /abr/);
 });
+
+test('seção com nsp igual à própria não é agregada', () => {
+  const r = lerConfigSecoes({ abr: [{ cd: 'ac', mu: [{ cd: '1', nm: 'X', zon: [{ cd: '0001', sec: [{ ns: '0005', nsp: '0005' }] }] }] }] });
+  assert.equal(r.municipios[0].secoes[0].principal, null);
+});

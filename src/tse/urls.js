@@ -7,7 +7,7 @@ export const nomeIndiceSecao = ({ pleito, uf, mun, zona, secao }) =>
 
 function preencher(template, valores) {
   return template.replace(/<(\w+)>/g, (_, chave) => {
-    if (!(chave in valores)) throw new Error(`template sem valor para <${chave}>: ${template}`);
+    if (valores[chave] == null) throw new Error(`template sem valor para <${chave}>: ${template}`);
     return valores[chave];
   });
 }

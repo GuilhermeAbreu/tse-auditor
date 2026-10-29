@@ -32,3 +32,7 @@ test('template com variável desconhecida falha alto', () => {
   const ruim = criarUrls({ base: 'b', ambiente: 'a', templates: { cs: '<base>/<foo>', aux: '<base>' } });
   assert.throws(() => ruim.configSecoes({ ciclo: 'ele2026', pleito: '1', uf: 'ac' }), /<foo>/);
 });
+
+test('valor ausente falha alto', () => {
+  assert.throws(() => urls.indiceSecao({ ciclo: 'ele2026', pleito: '3220', uf: 'ac', zona: '0004', secao: '0077' }), /<municipio>/);
+});
