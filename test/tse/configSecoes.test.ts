@@ -4,7 +4,7 @@ import { lerConfigSecoes } from '../../src/tse/configSecoes.ts';
 import { lerFixture } from '../helpers/fakeTse.ts';
 
 test('lê municípios, zonas e seções, marcando as agregadas', async () => {
-  const json = JSON.parse(await lerFixture('oficial/ele2026/arquivo-urna/3220/config/ac/ac-p003220-cs.json'));
+  const json = JSON.parse(String(await lerFixture('oficial/ele2026/arquivo-urna/3220/config/ac/ac-p003220-cs.json')));
   assert.deepEqual(lerConfigSecoes(json), {
     uf: 'ac',
     municipios: [{

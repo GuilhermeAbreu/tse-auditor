@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -14,7 +15,9 @@ const rodar = promisify(execFile);
 import { configInicial } from '../src/configSalva.ts';
 import { UFS } from '../src/ufs.ts';
 
-async function cli(t, args) {
+type ErroExec = Error & { code: number; stderr: string };
+
+async function cli(t: TestContext, args: string[]) {
   const fake = await iniciarFakeTse();
   t.after(fake.fechar);
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-cli-cfg-'));
@@ -24,7 +27,7 @@ async function cli(t, args) {
 }
 
 // Sobe o painel numa porta livre e devolve a URL base; encerra com SIGINT no fim do teste.
-async function subirPainel(t, args, { tseConfig }) {
+async function subirPainel(t: TestContext, args: string[], { tseConfig }: { tseConfig: string }) {
   const fake = await iniciarFakeTse();
   t.after(fake.fechar);
   const filho = spawn(process.execPath, [CLI, 'painel', '--porta', '0', ...args], {
@@ -34,7 +37,7 @@ async function subirPainel(t, args, { tseConfig }) {
   let erros = '';
   filho.stderr.on('data', (d) => { erros += d; });
   const saiu = new Promise((resolve) => filho.on('exit', (codigo) => resolve(codigo)));
-  const base = await new Promise((resolve, reject) => {
+  const base = await new Promise<string>((resolve, reject) => {
     filho.stdout.on('data', (d) => {
       saida += d;
       const m = /painel em http:\/\/localhost:(\d+)/.exec(saida);
@@ -66,7 +69,7 @@ test('coletar baixa a UF para a pasta indicada', async (t) => {
 });
 
 test('coletar recusa pleito inexistente', async (t) => {
-  await assert.rejects(cli(t, ['coletar', '--pleito', '9999']), (err) => {
+  await assert.rejects(cli(t, ['coletar', '--pleito', '9999']), (err: ErroExec) => {
     assert.equal(err.code, 1);
     assert.match(err.stderr, /pleito 9999 não existe/);
     return true;
@@ -74,7 +77,7 @@ test('coletar recusa pleito inexistente', async (t) => {
 });
 
 test('coletar sem --dados recusa HD ausente', async (t) => {
-  await assert.rejects(cli(t, ['coletar', '--pleito', '3220', '--uf', 'ac']), (err) => {
+  await assert.rejects(cli(t, ['coletar', '--pleito', '3220', '--uf', 'ac']), (err: ErroExec) => {
     assert.match(err.stderr, /O HD está conectado\?/);
     return true;
   });
@@ -91,7 +94,7 @@ test('painel sem opções nem configuração salva abre sem configuração e ace
   const tseConfig = path.join(dir, 'cfg', 'config.json');
   const { base, encerrar, saida } = await subirPainel(t, ['--dados', path.join(dir, 'dados')], { tseConfig });
   assert.match(saida(), /sem configuração/);
-  const cfg = await (await fetch(`${base}/api/config`)).json();
+  const cfg = await (await fetch(`${base}/api/config`)).json() as any;
   assert.equal(cfg.atual, null);
   assert.ok(cfg.disponiveis.pleitos.length > 0);
 
@@ -113,12 +116,12 @@ test('painel usa a configuração salva e as opções valem sobre ela', async (t
   const dados = path.join(dir, 'dados');
 
   let painel = await subirPainel(t, ['--dados', dados, '--sem-iniciar'], { tseConfig });
-  let { atual } = await (await fetch(`${painel.base}/api/config`)).json();
+  let { atual } = await (await fetch(`${painel.base}/api/config`)).json() as any;
   assert.deepEqual([atual.pleitos, atual.ufs, atual.concorrencia], [['3220', '3221'], ['ac', 'al'], 3]);
   assert.equal(await painel.encerrar(), 0);
 
   painel = await subirPainel(t, ['--dados', dados, '--sem-iniciar', '--pleito', '3221', '--concorrencia', '5'], { tseConfig });
-  ({ atual } = await (await fetch(`${painel.base}/api/config`)).json());
+  ({ atual } = await (await fetch(`${painel.base}/api/config`)).json() as any);
   assert.deepEqual([atual.pleitos, atual.ufs, atual.concorrencia, atual.intervaloPainelMs], [['3221'], ['ac', 'al'], 5, 900]);
   assert.equal(await painel.encerrar(), 0);
   assert.deepEqual(JSON.parse(await readFile(tseConfig, 'utf8')).pleitos, ['3221']);
@@ -129,7 +132,7 @@ test('painel com configuração salva inválida abre sem configuração', async 
   const tseConfig = path.join(dir, 'config.json');
   await writeFile(tseConfig, JSON.stringify({ pleitos: ['9999'], ufs: ['ac'], concorrencia: 3 }));
   const painel = await subirPainel(t, ['--dados', path.join(dir, 'dados')], { tseConfig });
-  assert.equal((await (await fetch(`${painel.base}/api/config`)).json()).atual, null);
+  assert.equal((await (await fetch(`${painel.base}/api/config`)).json() as any).atual, null);
   assert.equal(await painel.encerrar(), 0);
   assert.match(painel.erros(), /configuração salva não aplicada \(pleito 9999 não existe/);
 });
@@ -138,8 +141,8 @@ test('configInicial: opções da linha de comando valem sobre a configuração s
   const salva = { pleitos: ['3220'], ufs: ['ac'], concorrencia: 2 };
   assert.equal(configInicial({}, null), null);
   assert.deepEqual(configInicial({}, salva), { config: salva, origem: 'salva' });
-  assert.deepEqual(configInicial({ pleito: '3221', concorrencia: 6 }, salva).config, { pleitos: ['3221'], ufs: ['ac'], concorrencia: 6 });
-  assert.deepEqual(configInicial({ pleito: '3221' }, null).config, { pleitos: ['3221'], ufs: UFS, concorrencia: 4 });
-  assert.deepEqual(configInicial({ uf: 'al,ba' }, salva).config, { pleitos: ['3220'], ufs: ['al', 'ba'], concorrencia: 2 });
+  assert.deepEqual(configInicial({ pleito: '3221', concorrencia: 6 }, salva)!.config, { pleitos: ['3221'], ufs: ['ac'], concorrencia: 6 });
+  assert.deepEqual(configInicial({ pleito: '3221' }, null)!.config, { pleitos: ['3221'], ufs: UFS, concorrencia: 4 });
+  assert.deepEqual(configInicial({ uf: 'al,ba' }, salva)!.config, { pleitos: ['3220'], ufs: ['al', 'ba'], concorrencia: 2 });
   assert.equal(configInicial({ uf: 'al' }, null), null, 'sem pleito em lugar nenhum');
 });

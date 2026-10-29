@@ -5,9 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { montarEstado, statusDaUf } from '../../src/coleta/estado.ts';
 import { Manifest } from '../../src/storage/manifest.ts';
+import type { EstadoColeta, UfResumo } from '../../src/tipos/dominio.ts';
 
-const secao = (n, principal = null) => ({ zona: '0001', secao: n, principal });
-const chave = (uf, mun, n) => ({ pleito: '3220', uf, mun, zona: '0001', secao: n });
+type Dubles = Parameters<typeof montarEstado>[0];
+const uf = (u: Partial<UfResumo>) => u as UfResumo;
+const coleta = (c: Partial<EstadoColeta>) => c as EstadoColeta;
+
+const secao = (n: string, principal: string | null = null) => ({ zona: '0001', secao: n, principal });
+const chave = (uf: string, mun: string, n: string) => ({ pleito: '3220', uf, mun, zona: '0001', secao: n });
 
 test('agrega seções por UF, calcula projeção e status', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-estado-'));
@@ -31,7 +36,7 @@ test('agrega seções por UF, calcula projeção e status', async (t) => {
   assert.deepEqual(e.ufs.find((u) => u.uf === 'ac'), {
     uf: 'ac', pausada: false, total: 3, concluidas: 2, erros: 1, semArquivos: 1, agregadas: 1, bytes: 1000, status: 'baixado_com_erros',
   });
-  assert.equal(e.ufs.find((u) => u.uf === 'al').status, 'baixando');
+  assert.equal(e.ufs.find((u) => u.uf === 'al')!.status, 'baixando');
   assert.deepEqual(e.totais, { secoes: 4, concluidas: 2, erros: 1, semArquivos: 1, bytes: 1000 });
   assert.deepEqual(e.disco, { livres: 999, projecaoBytes: 2000, projecaoPreliminar: true });
   assert.equal(e.coleta.velocidadeBps, 500);
@@ -46,21 +51,21 @@ test('projeção nula enquanto nenhuma seção terminou; livre nulo se o HD sumi
   const manifest = new Manifest(path.join(dir, 'manifest.sqlite'), { cacheResumoMs: 0 });
   t.after(() => manifest.fechar());
   const coletor = { estado: { rodando: false, ufAtual: null }, velocidadeBps: () => 0 };
-  const e = await montarEstado({ manifest, coletor, pastaDados: dir, bytesLivres: async () => { throw new Error('EIO'); } });
+  const e = await montarEstado({ manifest, coletor: coletor as Dubles['coletor'], pastaDados: dir, bytesLivres: async () => { throw new Error('EIO'); } });
   assert.deepEqual(e.disco, { livres: null, projecaoBytes: null, projecaoPreliminar: true });
 });
 
 test('statusDaUf', () => {
-  const parada = { rodando: false, ufAtual: null };
-  assert.equal(statusDaUf({ uf: 'ac', pausada: true, total: 1, concluidas: 0, erros: 0 }, parada), 'pausada');
-  assert.equal(statusDaUf({ uf: 'ac', pausada: false, total: 1, concluidas: 0, erros: 0 }, parada), 'aguardando');
-  assert.equal(statusDaUf({ uf: 'ac', pausada: false, total: 0, concluidas: 0, erros: 0 }, parada), 'aguardando');
-  assert.equal(statusDaUf({ uf: 'ac', pausada: false, total: 2, concluidas: 1, erros: 1 }, parada), 'baixado_com_erros');
-  assert.equal(statusDaUf({ uf: 'ac', pausada: false, total: 2, concluidas: 2, erros: 0 }, parada), 'baixado');
-  assert.equal(statusDaUf({ uf: 'ac', pausada: true, total: 2, concluidas: 1, erros: 0 }, { rodando: true, ufAtual: 'ac' }), 'pausando');
+  const parada = coleta({ rodando: false, ufAtual: null });
+  assert.equal(statusDaUf(uf({ uf: 'ac', pausada: true, total: 1, concluidas: 0, erros: 0 }), parada), 'pausada');
+  assert.equal(statusDaUf(uf({ uf: 'ac', pausada: false, total: 1, concluidas: 0, erros: 0 }), parada), 'aguardando');
+  assert.equal(statusDaUf(uf({ uf: 'ac', pausada: false, total: 0, concluidas: 0, erros: 0 }), parada), 'aguardando');
+  assert.equal(statusDaUf(uf({ uf: 'ac', pausada: false, total: 2, concluidas: 1, erros: 1 }), parada), 'baixado_com_erros');
+  assert.equal(statusDaUf(uf({ uf: 'ac', pausada: false, total: 2, concluidas: 2, erros: 0 }), parada), 'baixado');
+  assert.equal(statusDaUf(uf({ uf: 'ac', pausada: true, total: 2, concluidas: 1, erros: 0 }), coleta({ rodando: true, ufAtual: 'ac' })), 'pausando');
 });
 
-const coletorFake = { estado: { rodando: false, ufAtual: null }, velocidadeBps: () => 0 };
+const coletorFake = { estado: coleta({ rodando: false, ufAtual: null }), velocidadeBps: () => 0 };
 
 test('projeção deixa de ser preliminar com amostra grande; erros fora do denominador', async () => {
   const manifest = {
@@ -72,14 +77,14 @@ test('projeção deixa de ser preliminar com amostra grande; erros fora do denom
     ],
     errosRecentes: () => [], eventos: () => [], erro: null,
   };
-  const e = await montarEstado({ manifest, coletor: coletorFake, pastaDados: '/x', bytesLivres: async () => 1 });
+  const e = await montarEstado({ manifest: manifest as unknown as Dubles['manifest'], coletor: coletorFake, pastaDados: '/x', bytesLivres: async () => 1 });
   assert.deepEqual(e.disco, { livres: 1, projecaoBytes: 20000, projecaoPreliminar: false });
 });
 
 test('manifest que falha gera estado degradado em vez de lançar', async () => {
   const quebra = () => { throw new Error('disco sumiu'); };
   const manifest = { ufs: quebra, resumoPorUf: quebra, errosRecentes: quebra, eventos: quebra };
-  const e = await montarEstado({ manifest, coletor: coletorFake, pastaDados: '/x', bytesLivres: async () => 7 });
+  const e = await montarEstado({ manifest: manifest as unknown as Dubles['manifest'], coletor: coletorFake, pastaDados: '/x', bytesLivres: async () => 7 });
   assert.equal(e.manifestErro, 'disco sumiu');
   assert.deepEqual(e.ufs, []);
   assert.deepEqual(e.disco, { livres: 7, projecaoBytes: null, projecaoPreliminar: true });

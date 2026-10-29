@@ -4,6 +4,7 @@ import { lerLogJez, parsearLog, resumirLog, tipoEvento } from '../../src/extraca
 import { decodificarBU } from '../../src/extracao/bu.ts';
 import { conferir } from '../../src/extracao/extrator.ts';
 import { arquivoUrna } from './fixtures.ts';
+import type { BU } from '../../src/extracao/bu.ts';
 
 test('classifica mensagens de voto', () => {
   assert.equal(tipoEvento('O voto do eleitor foi computado'), 'voto_computado');
@@ -23,18 +24,18 @@ test('log real do 1º turno: resumo do dia fecha com o BU', async () => {
   assert.equal(r.logVotosComputados, 234);
   assert.deepEqual([r.logHabAnoNascimento, r.logHabBiometrica, r.logHabMesario], [9, 212, 13]);
   assert.equal(r.logPrimeiroVoto, '2026-10-04T06:09:09');
-  assert.deepEqual(conferir(decodificarBU(arquivoUrna(3220, 'bu')), r, null), []);
+  assert.deepEqual(conferir(decodificarBU(arquivoUrna(3220, 'bu')), { ...r, logLinhasInvalidas: 0 }, null), []);
 });
 
 test('log do 2º turno usa o dia informado, não o de mais votos', async () => {
   const { eventos } = parsearLog(await lerLogJez(arquivoUrna(3221, 'log')));
   const r = resumirLog(eventos, '2026-10-25');
   assert.equal(r.logVotosComputados, 194);
-  assert.deepEqual(conferir(decodificarBU(arquivoUrna(3221, 'bu')), r, null), []);
+  assert.deepEqual(conferir(decodificarBU(arquivoUrna(3221, 'bu')), { ...r, logLinhasInvalidas: 0 }, null), []);
 });
 
 test('conferir aponta habilitações divergentes', () => {
   const bu = { comparecimento: 10, qtdHabilitacaoAnoNascimento: 1, qtdHabilitacaoBiometrica: 8, qtdHabilitacaoMesario: 1, resultados: [] };
   const log = { logDia: 'x', logVotosComputados: 10, logHabAnoNascimento: 1, logHabBiometrica: 7, logHabMesario: 2 };
-  assert.deepEqual(conferir(bu, log, null), ['qtdHabilitacaoBiometrica(8)!=logHabBiometrica(7)', 'qtdHabilitacaoMesario(1)!=logHabMesario(2)']);
+  assert.deepEqual(conferir(bu as unknown as BU, log as unknown as Parameters<typeof conferir>[1], null), ['qtdHabilitacaoBiometrica(8)!=logHabBiometrica(7)', 'qtdHabilitacaoMesario(1)!=logHabMesario(2)']);
 });

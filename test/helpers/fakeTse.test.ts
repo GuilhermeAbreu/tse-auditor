@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { iniciarFakeTse, lerFixture } from './fakeTse.ts';
 
-const md5 = (buf) => createHash('md5').update(buf).digest('hex');
+const md5 = (buf: Buffer) => createHash('md5').update(buf).digest('hex');
 const ELE_C = 'oficial/comum/config/ele-c.json';
 
 test('serve fixtures com ETag MD5 e 404 para o resto', async (t) => {

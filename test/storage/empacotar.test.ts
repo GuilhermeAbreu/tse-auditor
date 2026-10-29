@@ -6,21 +6,21 @@ import path from 'node:path';
 import { ZipCorrompidoError, ehErroDeFormatoZip, empacotarMunicipio } from '../../src/storage/empacotar.ts';
 import { lerZip } from '../helpers/zip.ts';
 
-async function preparar(arquivos) {
+async function preparar(arquivos: Record<string, string | Buffer>) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-zip-'));
   const pastaStaging = path.join(dir, 'staging');
   await gravar(pastaStaging, arquivos);
   return { pastaStaging, caminhoZip: path.join(dir, 'raw', 'AC', '3220', '01066.zip') };
 }
 
-async function gravar(pasta, arquivos) {
+async function gravar(pasta: string, arquivos: Record<string, string | Buffer>) {
   for (const [nome, conteudo] of Object.entries(arquivos)) {
     await mkdir(path.dirname(path.join(pasta, nome)), { recursive: true });
     await writeFile(path.join(pasta, nome), conteudo);
   }
 }
 
-const texto = (zip) => Object.fromEntries([...zip].map(([nome, e]) => [nome, e.dados.toString()]));
+const texto = (zip: Map<string, { dados: Buffer }>) => Object.fromEntries([...zip].map(([nome, e]) => [nome, e.dados.toString()]));
 
 test('empacota sem compressão, ignora .part e apaga o staging', async () => {
   const { pastaStaging, caminhoZip } = await preparar({

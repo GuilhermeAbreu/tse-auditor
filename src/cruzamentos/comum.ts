@@ -2,7 +2,7 @@
 // z-score robusto e o formato fixo de cada achado. Tudo em SQL do DuckDB.
 
 import type { DuckDBConnection } from '@duckdb/node-api';
-import type { Eleicoes, Linha, Turnos } from '../tipos/dominio.ts';
+import type { Achado, Eleicoes, Linha, Turnos } from '../tipos/dominio.ts';
 
 export interface ParamsCruzamento {
   uf: string;
@@ -12,7 +12,7 @@ export interface ParamsCruzamento {
 export interface Cruzamento {
   id: string;
   descricao: string;
-  executar(db: DuckDBConnection, params: ParamsCruzamento): Promise<Linha[]>;
+  executar(db: DuckDBConnection, params: ParamsCruzamento): Promise<Achado[]>;
 }
 
 // Pleitos do 1º e 2º turno, tirados das eleições do ele-c.json entre os pleitos presentes nos Parquet:
@@ -45,8 +45,9 @@ export const filtroUF = (uf: string): string => `upper(uf) = ${lit(uf.toUpperCas
 // z robusto = (x − mediana) / (1,4826 × MAD), com piso no denominador para grupos muito homogêneos.
 export const zRobusto = (x: string, med: string, mad: string, piso: number): string => `((${x}) - (${med})) / greatest(1.4826 * coalesce(${mad}, 0), ${piso})`;
 
-export async function linhas(db: DuckDBConnection, sql: string): Promise<Linha[]> {
-  return (await db.runAndReadAll(sql)).getRowObjectsJson();
+// T: formato das linhas que o SQL devolve (Linha genérica por padrão).
+export async function linhas<T = Linha>(db: DuckDBConnection, sql: string): Promise<T[]> {
+  return (await db.runAndReadAll(sql)).getRowObjectsJson() as T[];
 }
 
 export async function carregarParquet(db: DuckDBConnection, pasta: string): Promise<void> {

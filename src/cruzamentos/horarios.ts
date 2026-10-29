@@ -1,7 +1,7 @@
 import { achados, desloc, filtroUF, linhas } from './comum.ts';
 import type { DuckDBConnection } from '@duckdb/node-api';
 import type { ParamsCruzamento } from './comum.ts';
-import type { Linha } from '../tipos/dominio.ts';
+import type { Achado } from '../tipos/dominio.ts';
 
 export const id = 'horarios';
 export const descricao = 'Votos antes da abertura/08h ou após pausa ≥ 30 min depois das 17h (Brasília); testes/carga misturados à votação.';
@@ -13,9 +13,9 @@ const TESTE = `((e.mensagem ILIKE '%teste%' AND e.mensagem NOT ILIKE '%teste de 
   OR (e.mensagem LIKE 'Modo de carga da UE%' AND e.mensagem NOT LIKE '%Votação%' AND e.mensagem NOT LIKE '%contingência%')
   OR (e.mensagem LIKE 'Iniciando aplicação - ELEIÇÃO%' AND e.mensagem NOT LIKE '%OFICIAL%'))`;
 
-export async function executar(db: DuckDBConnection, { uf }: ParamsCruzamento): Promise<Linha[]> {
+export async function executar(db: DuckDBConnection, { uf }: ParamsCruzamento): Promise<Achado[]> {
   const d = desloc(uf);
-  return linhas(db, achados(`
+  return linhas<Achado>(db, achados(`
     WITH s AS (SELECT pleito, uf, mun, zona, secao, logDia, CAST(abertura AS TIMESTAMP) abertura
                FROM secoes WHERE status = 'ok' AND ${filtroUF(uf)}),
     v AS (SELECT e.pleito, e.mun, e.zona, e.secao, e.ts, e.ts + to_hours(${d}) br, s.abertura,

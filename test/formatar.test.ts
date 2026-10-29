@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fmtBytes, linhaDeProgresso } from '../src/formatar.ts';
+import type { EstadoPainel } from '../src/tipos/dominio.ts';
 
 test('fmtBytes', () => {
   assert.equal(fmtBytes(null), '—');
@@ -14,5 +15,5 @@ test('linhaDeProgresso', () => {
     totais: { secoes: 200, concluidas: 90, erros: 10, semArquivos: 0, bytes: 1024 ** 2 },
     coleta: { velocidadeBps: 2048, ufAtual: 'ac', municipioAtual: '01066 PORTO WALTER' },
   };
-  assert.equal(linhaDeProgresso(e), '50.0% | 90/200 seções | 10 erros | 1.0 MB | 2.0 KB/s | AC 01066 PORTO WALTER');
+  assert.equal(linhaDeProgresso(e as unknown as EstadoPainel), '50.0% | 90/200 seções | 10 erros | 1.0 MB | 2.0 KB/s | AC 01066 PORTO WALTER');
 });

@@ -4,7 +4,7 @@ import { lerIndiceSecao } from '../../src/tse/indiceSecao.ts';
 import { FX, lerFixture } from '../helpers/fakeTse.ts';
 
 test('lê o índice real de 2026', async () => {
-  const json = JSON.parse(await lerFixture(`${FX.dirSecao('3220')}/p003220-ac-m01066-z0004-s0077-aux.json`));
+  const json = JSON.parse(String(await lerFixture(`${FX.dirSecao('3220')}/p003220-ac-m01066-z0004-s0077-aux.json`)));
   const indice = lerIndiceSecao(json);
   assert.equal(indice.status, 'Totalizada');
   assert.equal(indice.conjuntos.length, 1);

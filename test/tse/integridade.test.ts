@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { md5, md5DoEtag, sha512Hex, vscConfereComDiretorio, vscContemSha512 } from '../../src/tse/integridade.ts';
 import { FX, lerFixture } from '../helpers/fakeTse.ts';
 
-const arquivo = (pleito, hash, sufixo) => lerFixture(`${FX.dirSecao(pleito)}/${hash}/o0${pleito}ac0106600040077-${sufixo}`);
+const arquivo = (pleito: string, hash: string, sufixo: string) => lerFixture(`${FX.dirSecao(pleito)}/${hash}/o0${pleito}ac0106600040077-${sufixo}`);
 
 test('sha256 do .vsc confere com o hash do diretório, nos dois turnos', async () => {
   const vsc1 = await arquivo('3220', FX.hash3220, 'vota.vsc');

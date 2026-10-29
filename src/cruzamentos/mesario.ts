@@ -1,17 +1,17 @@
 import { achados, desloc, filtroUF, linhas, outroTurno, zRobusto } from './comum.ts';
 import type { DuckDBConnection } from '@duckdb/node-api';
 import type { ParamsCruzamento } from './comum.ts';
-import type { Linha } from '../tipos/dominio.ts';
+import type { Achado } from '../tipos/dominio.ts';
 
 export const id = 'mesario';
 export const descricao = 'Liberação pelo mesário: taxa × local/zona/outro turno, concentração na última hora, abstenção caiu e liberação subiu.';
 
 const HAB = "('hab_biometrica', 'hab_ano_nascimento', 'hab_mesario', 'hab_mesario_nao_associado')";
 
-export async function executar(db: DuckDBConnection, { uf, turnos }: ParamsCruzamento): Promise<Linha[]> {
+export async function executar(db: DuckDBConnection, { uf, turnos }: ParamsCruzamento): Promise<Achado[]> {
   const d = desloc(uf);
   const SEGUNDO = turnos?.segundo ?? 'NULL';
-  return linhas(db, achados(`
+  return linhas<Achado>(db, achados(`
     WITH b AS (SELECT pleito, uf, mun, zona, secao, local, aptos, abstencao, logDia, comparecimento comp, qtdHabilitacaoMesario mes,
                  qtdHabilitacaoMesario::DOUBLE / comparecimento taxa
                FROM secoes WHERE status = 'ok' AND comparecimento > 0 AND ${filtroUF(uf)}),

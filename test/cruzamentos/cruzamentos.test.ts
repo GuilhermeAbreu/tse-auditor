@@ -8,12 +8,13 @@ import * as mesario from '../../src/cruzamentos/mesario.ts';
 import * as horarios from '../../src/cruzamentos/horarios.ts';
 import { rodarCruzamentos, resumir } from '../../src/cruzamentos/index.ts';
 import { turnosDosPleitos } from '../../src/cruzamentos/comum.ts';
+import type { Eleicoes } from '../../src/tipos/dominio.ts';
 
 const T = { primeiro: 3220, segundo: 3221 };
 
 test('turnosDosPleitos: 1º e 2º turno do mesmo ciclo pelo ele-c.json', () => {
-  const pl = (cd, ciclo, turno) => ({ cd, ciclo, data: '', eleicoes: [{ cd: 1, nome: 'x', turno, cargos: [] }] });
-  const eleicoes = { pleitos: [pl('3220', 'ele2026', 1), pl('3221', 'ele2026', 2), pl('3000', 'ele2024', 2)] };
+  const pl = (cd: string, ciclo: string, turno: number) => ({ cd, ciclo, data: '', eleicoes: [{ cd: 1, nome: 'x', turno, cargos: [] }] });
+  const eleicoes = { pleitos: [pl('3220', 'ele2026', 1), pl('3221', 'ele2026', 2), pl('3000', 'ele2024', 2)] } as unknown as Eleicoes;
   assert.deepEqual(turnosDosPleitos(eleicoes, [3221, 3220]), T);
   assert.deepEqual(turnosDosPleitos(eleicoes, [3220]), { primeiro: 3220, segundo: null });
   assert.deepEqual(turnosDosPleitos(eleicoes, [3220, 3000]), { primeiro: 3220, segundo: null });
@@ -34,14 +35,14 @@ const EVENTOS = `CREATE TABLE eventos_log (pleito INTEGER, uf VARCHAR, mun VARCH
   modulo VARCHAR, tipo VARCHAR, mensagem VARCHAR, ordem BIGINT)`;
 
 // seção i da zona 0001, local 1; comparecimento 100, mesário m, abstenção a. Horários locais com UF 'XX' (= Brasília).
-function secao(pleito, i, { aptos = 120, comp = 100, mes = 5, abst = 20, ano = 2 } = {}) {
+function secao(pleito: number, i: number, { aptos = 120, comp = 100, mes = 5, abst = 20, ano = 2 } = {}) {
   const s = String(i).padStart(4, '0');
   const dia = pleito === 3220 ? '2026-10-04' : '2026-10-25';
   return `(${pleito}, 'XX', '00001', '0001', '${s}', 'ok', 1, ${aptos}, ${comp}, ${abst}, ${ano}, ${comp - mes - ano}, ${mes},
     'secao', '${dia} 07:30:00', NULL, false, '${dia}', ${comp}, '${dia} 16:30:00', '1', NULL)`;
 }
 
-async function banco({ secoes, votos = [], eventos = [] }) {
+async function banco({ secoes, votos = [], eventos = [] }: { secoes: string[]; votos?: string[]; eventos?: string[] }) {
   const db = await (await DuckDBInstance.create(':memory:')).connect();
   await db.run(SECOES);
   await db.run(VOTOS);
@@ -53,23 +54,23 @@ async function banco({ secoes, votos = [], eventos = [] }) {
   return db;
 }
 
-const voto = (pleito, s, cargo, tipo, numero, q) =>
+const voto = (pleito: number, s: number, cargo: number, tipo: string, numero: number | string, q: number) =>
   `(${pleito}, 'XX', '00001', '0001', '${String(s).padStart(4, '0')}', 'BU', 1, ${cargo}, 'c${cargo}', '${tipo}', ${numero}, ${q})`;
 
 test('limites: comparecimento acima dos aptos e votos acima do comparecimento', async () => {
-  const votos = [];
+  const votos: string[] = [];
   for (let i = 1; i <= 3; i++) votos.push(voto(3220, i, 5, 'nominal', 11, i === 3 ? 201 : 200)); // senador: 2 votos por eleitor
   const db = await banco({ secoes: [secao(3220, 1, { aptos: 90 }), secao(3220, 2), secao(3220, 3)], votos });
   const r = await limites.executar(db, { uf: 'xx', turnos: T });
   assert.deepEqual(r.map((x) => [x.secao, x.sinal, x.pontuacao]), [
     ['0001', 'COMPARECIMENTO_ACIMA_APTOS', 100], ['0003', 'VOTOS_ACIMA_COMPARECIMENTO', 100]]);
-  assert.equal(JSON.parse(r[1].detalhe).votosPorEleitor, 2);
+  assert.equal(JSON.parse(r[1].detalhe!).votosPorEleitor, 2);
   assert.ok(!JSON.stringify(r).toLowerCase().includes('fraude'));
 });
 
 test('turnos: ganho acima do disponível e variação atípica na zona', async () => {
   const secoes = [];
-  const votos = [];
+  const votos: string[] = [];
   for (let i = 1; i <= 8; i++) {
     secoes.push(secao(3220, i), secao(3221, i));
     // 1º turno: 13=40, 22=40, 99 (eliminado)=10, branco/nulo=10. 2º turno: 13=50, 22=50 (normal).
@@ -82,7 +83,7 @@ test('turnos: ganho acima do disponível e variação atípica na zona', async (
   const db = await banco({ secoes, votos });
   const r = await turnos.executar(db, { uf: 'xx', turnos: T });
   const ganho = r.filter((x) => x.sinal === 'GANHO_ACIMA_DISPONIVEL');
-  assert.deepEqual(ganho.map((x) => [x.secao, JSON.parse(x.detalhe).candidato, x.valor, x.referencia]), [['0007', 13, 40, 20]]);
+  assert.deepEqual(ganho.map((x) => [x.secao, JSON.parse(x.detalhe!).candidato, x.valor, x.referencia]), [['0007', 13, 40, 20]]);
   const variacao = r.filter((x) => x.sinal === 'VARIACAO_ATIPICA_ZONA').map((x) => x.secao);
   assert.ok(variacao.includes('0008'));
   assert.ok(!variacao.includes('0001'));
@@ -104,9 +105,9 @@ test('mesario: taxa acima do local/zona/outro turno e abstenção caiu com mesá
 });
 
 test('mesario: liberações manuais concentradas na última hora', async () => {
-  const eventos = [];
+  const eventos: string[] = [];
   let ordem = 0;
-  const ev = (h, m, tipo) => eventos.push(`(3220, 'XX', '00001', '0001', '0001', '2026-10-04 ${h}:${m}:00', 'VOTA', ${tipo ? `'${tipo}'` : 'NULL'}, 'x', ${ordem++})`);
+  const ev = (h: string, m: string, tipo: string | null) => eventos.push(`(3220, 'XX', '00001', '0001', '0001', '2026-10-04 ${h}:${m}:00', 'VOTA', ${tipo ? `'${tipo}'` : 'NULL'}, 'x', ${ordem++})`);
   for (let k = 0; k < 90; k++) { // 8h–15h: biometria
     const h = String(8 + Math.floor(k / 12)).padStart(2, '0');
     const m = String((k % 12) * 5).padStart(2, '0');
@@ -116,13 +117,13 @@ test('mesario: liberações manuais concentradas na última hora', async () => {
   const db = await banco({ secoes: [secao(3220, 1, { mes: 10, ano: 0 })], eventos });
   const r = (await mesario.executar(db, { uf: 'xx', turnos: T })).filter((x) => x.sinal === 'MESARIO_ULTIMA_HORA');
   assert.equal(r.length, 1);
-  assert.equal(JSON.parse(r[0].detalhe).mesarioUltimaHora, 10);
+  assert.equal(JSON.parse(r[0].detalhe!).mesarioUltimaHora, 10);
 });
 
 test('horarios: voto antes da abertura, voto após pausa depois das 17h e teste no meio da votação', async () => {
-  const eventos = [];
+  const eventos: string[] = [];
   let ordem = 0;
-  const ev = (s, ts, tipo, msg = 'x', pleito = 3220) => eventos.push(
+  const ev = (s: string, ts: string, tipo: string | null, msg = 'x', pleito = 3220) => eventos.push(
     `(${pleito}, 'XX', '00001', '0001', '${s}', '2026-10-04 ${ts}', 'VOTA', ${tipo ? `'${tipo}'` : 'NULL'}, '${msg}', ${ordem++})`);
   // 0001: votos contínuos até 17h20 (fila) -> sem sinal
   for (const t of ['08:10:00', '12:00:00', '16:55:00', '17:10:00', '17:20:00']) ev('0001', t, 'voto_computado');

@@ -9,14 +9,14 @@ import { DuckDBInstance } from '@duckdb/node-api';
 import { extrairUF } from '../../src/extracao/extrator.ts';
 import { BASE } from './fixtures.ts';
 
-async function zipar(pasta, destino, pular) {
+async function zipar(pasta: string, destino: string, pular: (rel: string) => boolean): Promise<void> {
   const z = new yazl.ZipFile();
   for (const d of await readdir(pasta, { recursive: true, withFileTypes: true })) {
     const rel = path.relative(pasta, path.join(d.parentPath, d.name));
     if (d.isFile() && !pular(rel)) z.addFile(path.join(pasta, rel), rel, { compress: false });
   }
   z.end();
-  await new Promise((ok, falha) => z.outputStream.pipe(createWriteStream(destino)).on('close', ok).on('error', falha));
+  await new Promise<void>((ok, falha) => z.outputStream.pipe(createWriteStream(destino)).on('close', () => ok()).on('error', falha));
 }
 
 test('extrai seções, votos, log e falhas para parquet', async () => {
@@ -33,8 +33,8 @@ test('extrai seções, votos, log e falhas para parquet', async () => {
   assert.equal(stats.comInconsistencia, 0);
   const db = await DuckDBInstance.create();
   const con = await db.connect();
-  const q = async (sql) => (await con.runAndReadAll(sql)).getRowObjectsJson();
-  const pq = (t) => `'${path.join(dados, 'parquet/AC', `${t}.parquet`)}'`;
+  const q = async (sql: string) => (await con.runAndReadAll(sql)).getRowObjectsJson();
+  const pq = (t: string) => `'${path.join(dados, 'parquet/AC', `${t}.parquet`)}'`;
   const secoes = await q(`select secao, status, agregada, comparecimento, abstencao, inconsistencias from ${pq('secoes')} order by secao`);
   assert.deepEqual(secoes.map((s) => [s.secao, s.status]), [['0077', 'ok'], ['0078', 'sem dados'], ['0079', 'sem dados'], ['0270', 'agregada']]);
   assert.equal(secoes[0].agregada, true);

@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
@@ -20,7 +21,7 @@ const CONJUNTOS = [{
   arquivos: [{ nome: 'a-bu.dat', tipo: 'bu' }, { nome: 'a-vota.vsc', tipo: 'vota' }],
 }];
 
-async function novoManifest(t, opcoes) {
+async function novoManifest(t: TestContext, opcoes?: ConstructorParameters<typeof Manifest>[1]) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-manifest-'));
   const caminho = path.join(dir, 'manifest.sqlite');
   const m = new Manifest(caminho, opcoes);
@@ -46,8 +47,8 @@ test('registrarConfig é idempotente e marca seções agregadas', async (t) => {
   assert.deepEqual(m.municipiosDaUf('ac'), [{ mun: '01066', nome: 'PORTO WALTER' }]);
   assert.deepEqual(m.secoesPendentes('3220', 'ac', '01066'), [S77]);
   const agregada = m.secao({ ...S77, secao: '0270' });
-  assert.equal(agregada.status, 'agregada');
-  assert.equal(agregada.principal, '0077');
+  assert.equal(agregada!.status, 'agregada');
+  assert.equal(agregada!.principal, '0077');
 });
 
 test('índice, arquivos e finalização de seção', async (t) => {
@@ -72,7 +73,7 @@ test('índice, arquivos e finalização de seção', async (t) => {
 
   m.finalizarSecao(S77, { status: 'completa', bytes: 10 });
   assert.deepEqual(m.secoesPendentes('3220', 'ac', '01066'), []);
-  assert.equal(m.secao(S77).status, 'completa');
+  assert.equal(m.secao(S77)!.status, 'completa');
 
   m.finalizarSecao(S77, { status: 'erro', erro: 'a-bu.dat: falhou' });
   assert.deepEqual(m.secoesPendentes('3220', 'ac', '01066'), [S77], 'seção com erro volta para a fila');
@@ -82,12 +83,12 @@ test('índice, arquivos e finalização de seção', async (t) => {
 test('municípios empacotados', async (t) => {
   const { m } = await novoManifest(t);
   m.registrarConfig('3220', 'ac', MUNICIPIOS);
-  assert.equal(m.municipio('3220', 'ac', '01066').empacotado_em, null);
+  assert.equal(m.municipio('3220', 'ac', '01066')!.empacotado_em, null);
   assert.equal(m.municipio('3221', 'ac', '01066'), undefined);
   m.marcarEmpacotado('3220', 'ac', '01066', 1234);
   const mun = m.municipio('3220', 'ac', '01066');
-  assert.equal(mun.zip_bytes, 1234);
-  assert.ok(mun.empacotado_em);
+  assert.equal(mun!.zip_bytes, 1234);
+  assert.ok(mun!.empacotado_em);
 });
 
 test('resumo por UF e eventos', async (t) => {
@@ -114,10 +115,10 @@ test('persiste entre aberturas', async (t) => {
   m.fechar();
   const reaberto = new Manifest(caminho);
   t.after(() => reaberto.fechar());
-  assert.equal(reaberto.secao(S77).status, 'completa');
+  assert.equal(reaberto.secao(S77)!.status, 'completa');
 });
 
-const contar = (m, status) => m.db.prepare('SELECT COUNT(*) AS n FROM arquivos WHERE status = ?').get(status).n;
+const contar = (m: Manifest, status: string) => (m.db.prepare('SELECT COUNT(*) AS n FROM arquivos WHERE status = ?').get(status) as { n: number }).n;
 
 test('escritas só ficam visíveis para outra conexão após descarregar', async (t) => {
   const { m, caminho } = await novoManifest(t);
@@ -130,9 +131,9 @@ test('escritas só ficam visíveis para outra conexão após descarregar', async
   t.after(() => outra.close());
   const lerOutra = () => {
     try {
-      return outra.prepare("SELECT COUNT(*) AS n FROM arquivos WHERE status = 'ok'").get().n;
+      return (outra.prepare("SELECT COUNT(*) AS n FROM arquivos WHERE status = 'ok'").get() as { n: number }).n;
     } catch (err) {
-      if (err.code === 'SQLITE_BUSY') return 0;
+      if ((err as { code?: string }).code === 'SQLITE_BUSY') return 0;
       throw err;
     }
   };
@@ -160,7 +161,7 @@ test('commit com falha faz rollback e deixa erro persistente só para escritas',
     assert.throws(() => m.registrarEvento('erro', 'ac', 'x'), /HD desconectado/);
     assert.throws(() => m.marcarArquivo(S77, 'h1', 'a', { status: 'ok' }), /HD desconectado/);
   }
-  assert.match(m.erro.message, /HD desconectado/);
+  assert.match(m.erro!.message, /HD desconectado/);
   m.fechar();
 });
 
@@ -171,7 +172,7 @@ test('fechar grava a fila pendente', async (t) => {
   m.fechar();
   const reaberto = new Manifest(caminho);
   t.after(() => reaberto.fechar());
-  assert.equal(reaberto.secao(S77).bytes, 7);
+  assert.equal(reaberto.secao(S77)!.bytes, 7);
 });
 
 test('reabrirMunicipio devolve seções e arquivos à fila e limpa o empacotamento', async (t) => {
@@ -182,11 +183,11 @@ test('reabrirMunicipio devolve seções e arquivos à fila e limpa o empacotamen
   m.finalizarSecao(S77, { status: 'completa', bytes: 10 });
   m.marcarEmpacotado('3220', 'ac', '01066', 99);
   m.reabrirMunicipio('3220', 'ac', '01066');
-  assert.equal(m.secao(S77).status, 'pendente');
-  assert.equal(m.secao(S77).bytes, 0);
-  assert.equal(m.secao({ ...S77, secao: '0270' }).status, 'agregada');
+  assert.equal(m.secao(S77)!.status, 'pendente');
+  assert.equal(m.secao(S77)!.bytes, 0);
+  assert.equal(m.secao({ ...S77, secao: '0270' })!.status, 'agregada');
   assert.equal(contar(m, 'ok'), 0);
   const mun = m.municipio('3220', 'ac', '01066');
-  assert.equal(mun.empacotado_em, null);
-  assert.equal(mun.zip_bytes, null);
+  assert.equal(mun!.empacotado_em, null);
+  assert.equal(mun!.zip_bytes, null);
 });

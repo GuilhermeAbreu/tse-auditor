@@ -9,12 +9,16 @@ import { HttpClient } from '../../src/net/http.ts';
 import { buscarEleicoes } from '../../src/tse/eleicoes.ts';
 import { UFS } from '../../src/ufs.ts';
 import { iniciarFakeTse } from '../helpers/fakeTse.ts';
+import type { TestContext } from 'node:test';
+import type { OpcoesControle } from '../../src/coleta/controle.ts';
+import type { OpcoesHttpClient } from '../../src/net/http.ts';
+import type { ConfigEntrada } from '../../src/tipos/dominio.ts';
 
-async function montar(t, { criarColetor } = {}) {
+async function montar(t: TestContext, { criarColetor }: Pick<OpcoesControle, 'criarColetor'> = {}) {
   const fake = await iniciarFakeTse();
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-controle-'));
-  const http = [];
-  const criarHttp = (opcoes) => {
+  const http: OpcoesHttpClient[] = [];
+  const criarHttp = (opcoes: OpcoesHttpClient) => {
     http.push(opcoes);
     return new HttpClient({ ...opcoes, esperaBaseMs: 1, tentativas: 2 });
   };
@@ -63,7 +67,7 @@ test('aplicar configura, salva e devolve a configuração', async (t) => {
   const esperado = { ...salvo, ciclo: 'ele2026', dados: path.join(dir, 'dados') };
   assert.deepEqual(atual, esperado);
   assert.deepEqual(controle.configuracao(), esperado);
-  assert.equal(controle.coletor.estado.rodando, false, 'sem iniciar');
+  assert.equal(controle.coletor!.estado.rodando, false, 'sem iniciar');
   assert.deepEqual(await lerConfigSalva(arquivoConfig), salvo);
   await access(path.join(dir, 'dados', 'manifest.sqlite'));
   assert.deepEqual((await controle.obterEstado()).configuracao, esperado);
@@ -72,7 +76,7 @@ test('aplicar configura, salva e devolve a configuração', async (t) => {
 test('aplicar recusa configurações inválidas sem mudar a atual', async (t) => {
   const { controle } = await montar(t);
   const ok = { pleitos: ['3220'], ufs: ['ac'], concorrencia: 4 };
-  const casos = [
+  const casos: [ConfigEntrada | undefined, RegExp][] = [
     [{ ...ok, pleitos: [] }, /ao menos um pleito/],
     [{ ...ok, pleitos: ['9999'] }, /9999 não existe/],
     [{ ...ok, pleitos: ['3220', '452'] }, /mesmo ciclo/],
@@ -100,31 +104,31 @@ test('aplicar recusa configurações inválidas sem mudar a atual', async (t) =>
     [{ ...ok, hd: '' }, /absoluto/],
     [undefined, /ao menos um pleito/],
   ];
-  for (const [config, erro] of casos) await assert.rejects(controle.aplicar(config), erro);
+  for (const [config, erro] of casos) await assert.rejects(controle.aplicar(config as ConfigEntrada), erro);
   assert.equal(controle.configuracao(), null);
   await controle.aplicar(ok);
   await assert.rejects(controle.aplicar({ ...ok, ufs: ['zz', 'xx'] }), /UF desconhecida/);
-  assert.deepEqual(controle.configuracao().ufs, ['ac']);
+  assert.deepEqual(controle.configuracao()!.ufs, ['ac']);
 });
 
 test('aplicar com iniciar coleta; aplicar de novo para e recomeça com a nova configuração', async (t) => {
   const { controle } = await montar(t);
   await controle.aplicar({ pleitos: ['3220', '3221'], ufs: ['ac'], concorrencia: 4 }, { iniciar: true });
   const primeiro = controle.coletor;
-  assert.equal(primeiro.estado.rodando, true);
-  await primeiro.aguardar();
-  assert.equal(primeiro.estado.motivoParada, 'concluída');
+  assert.equal(primeiro!.estado.rodando, true);
+  await primeiro!.aguardar();
+  assert.equal(primeiro!.estado.motivoParada, 'concluída');
 
   // reinicia enquanto roda: o coletor anterior é parado e um novo assume
   await controle.aplicar({ pleitos: ['3220'], ufs: ['ac', 'zz'], concorrencia: 1 }, { iniciar: true });
   const segundo = controle.coletor;
   assert.notEqual(segundo, primeiro);
-  assert.equal(segundo.estado.rodando, true);
+  assert.equal(segundo!.estado.rodando, true);
   await controle.aplicar({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 3 }, { iniciar: false });
-  assert.equal(segundo.estado.rodando, false, 'o anterior foi parado');
-  assert.equal(segundo.estado.motivoParada, 'parada solicitada');
-  assert.equal(controle.coletor.concorrencia, 3);
-  assert.deepEqual(controle.coletor.pleitos, ['3220']);
+  assert.equal(segundo!.estado.rodando, false, 'o anterior foi parado');
+  assert.equal(segundo!.estado.motivoParada, 'parada solicitada');
+  assert.equal(controle.coletor!.concorrencia, 3);
+  assert.deepEqual(controle.coletor!.pleitos, ['3220']);
 
   const estado = await controle.obterEstado();
   assert.deepEqual(estado.ufs.map((u) => u.uf), ['ac'], 'só as UFs da configuração');
@@ -140,15 +144,15 @@ test('opções avançadas chegam ao HTTP, ao coletor e ao manifest; campos ausen
   });
   assert.deepEqual(http.at(-1), { concorrencia: 20, tentativas: 3, esperaBaseMs: 200, esperaMaxMs: 2000, timeoutMs: 6000, userAgent: 'meu agente' });
   const { coletor } = controle;
-  assert.deepEqual([coletor.tentativasVerificacao, coletor.limiteFalhasRede, coletor.minLivreBytes, coletor.concorrencia], [1, 7, 2 * 1024 ** 3, 20]);
+  assert.deepEqual([coletor!.tentativasVerificacao, coletor!.limiteFalhasRede, coletor!.minLivreBytes, coletor!.concorrencia], [1, 7, 2 * 1024 ** 3, 20]);
   assert.equal(controle.intervaloPainelMs(), 900);
 
   await controle.aplicar({ http: { tentativas: 5 } });
   const atual = controle.configuracao();
-  assert.deepEqual(atual.pleitos, ['3220']);
-  assert.equal(atual.concorrencia, 20);
-  assert.deepEqual(atual.http, { tentativas: 5, esperaBaseMs: 200, esperaMaxMs: 2000, timeoutMs: 6000, userAgent: 'meu agente' });
-  assert.equal(atual.intervaloCommitMs, 300);
+  assert.deepEqual(atual!.pleitos, ['3220']);
+  assert.equal(atual!.concorrencia, 20);
+  assert.deepEqual(atual!.http, { tentativas: 5, esperaBaseMs: 200, esperaMaxMs: 2000, timeoutMs: 6000, userAgent: 'meu agente' });
+  assert.equal(atual!.intervaloCommitMs, 300);
 });
 
 test('mudar o intervalo de gravação reabre o manifest', async (t) => {
@@ -159,9 +163,9 @@ test('mudar o intervalo de gravação reabre o manifest', async (t) => {
   assert.equal(controle.manifest, primeiro, 'mesma pasta e mesmo intervalo: mantém');
   await controle.aplicar({ intervaloCommitMs: 500 });
   assert.notEqual(controle.manifest, primeiro);
-  assert.equal(primeiro.db.open, false);
-  assert.equal(controle.manifest.db.open, true);
-  controle.manifest.registrarEvento('info', null, 'grava no manifest reaberto');
+  assert.equal(primeiro!.db.open, false);
+  assert.equal(controle.manifest!.db.open, true);
+  controle.manifest!.registrarEvento('info', null, 'grava no manifest reaberto');
 });
 
 test('aplicar sem --dados recusa HD ausente e mantém o estado', async (t) => {
@@ -178,9 +182,9 @@ test('aplicar sem --dados recusa HD ausente e mantém o estado', async (t) => {
   // o HD informado na configuração vale sobre o padrão
   const hd = await mkdtemp(path.join(os.tmpdir(), 'tse-controle-hd-'));
   await controle.aplicar({ pleitos: ['3220'], ufs: ['ac'], hd });
-  assert.equal(controle.configuracao().dados, path.join(hd, 'tse2026'));
+  assert.equal(controle.configuracao()!.dados, path.join(hd, 'tse2026'));
   await assert.rejects(controle.aplicar({ hd: path.join(dir, 'outro-hd') }), /O HD está conectado\?/);
-  assert.equal(controle.configuracao().hd, hd, 'falha mantém a configuração anterior');
+  assert.equal(controle.configuracao()!.hd, hd, 'falha mantém a configuração anterior');
 });
 
 test('troca de ciclo abre o manifest da pasta do novo ano', async (t) => {
@@ -194,22 +198,22 @@ test('troca de ciclo abre o manifest da pasta do novo ano', async (t) => {
   t.after(() => controle.fechar());
   await controle.aplicar({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 4 });
   const m2026 = controle.manifest;
-  assert.equal(controle.configuracao().dados, path.join(hd, 'tse2026'));
+  assert.equal(controle.configuracao()!.dados, path.join(hd, 'tse2026'));
   await controle.aplicar({ pleitos: ['452'], ufs: ['ac'], concorrencia: 4 });
-  assert.equal(controle.configuracao().dados, path.join(hd, 'tse2024'));
+  assert.equal(controle.configuracao()!.dados, path.join(hd, 'tse2024'));
   assert.notEqual(controle.manifest, m2026);
-  assert.equal(m2026.db.open, false, 'manifest anterior fechado');
+  assert.equal(m2026!.db.open, false, 'manifest anterior fechado');
   await access(path.join(hd, 'tse2024', 'manifest.sqlite'));
 
   // trocar de HD também reabre o manifest, na pasta do ano dentro do novo HD
   const hd2 = await mkdtemp(path.join(os.tmpdir(), 'tse-controle-hd2-'));
   const m2024 = controle.manifest;
   await controle.aplicar({ pleitos: ['452'], ufs: ['ac'], concorrencia: 4, hd: hd2 });
-  assert.equal(controle.configuracao().dados, path.join(hd2, 'tse2024'));
-  assert.equal(m2024.db.open, false);
+  assert.equal(controle.configuracao()!.dados, path.join(hd2, 'tse2024'));
+  assert.equal(m2024!.db.open, false);
   await controle.aplicar({ pleitos: ['452'], ufs: ['ac'], concorrencia: 4, hd });
   await controle.aplicar({ pleitos: ['453'], ufs: ['ac'], concorrencia: 4 });
-  assert.equal(controle.configuracao().dados, path.join(hd, 'tse2024'));
+  assert.equal(controle.configuracao()!.dados, path.join(hd, 'tse2024'));
 });
 
 test('aplicações simultâneas entram na fila', async (t) => {
@@ -218,9 +222,9 @@ test('aplicações simultâneas entram na fila', async (t) => {
     controle.aplicar({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 1 }),
     controle.aplicar({ pleitos: ['3221'], ufs: ['al'], concorrencia: 2 }),
   ]);
-  assert.equal(a.concorrencia, 1);
-  assert.equal(b.concorrencia, 2);
-  assert.deepEqual(controle.configuracao().pleitos, ['3221']);
+  assert.equal(a!.concorrencia, 1);
+  assert.equal(b!.concorrencia, 2);
+  assert.deepEqual(controle.configuracao()!.pleitos, ['3221']);
 });
 
 test('caminho da configuração salva: TSE_CONFIG, XDG_CONFIG_HOME e ~/.config', async () => {

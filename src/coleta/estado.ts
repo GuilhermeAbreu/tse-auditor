@@ -18,8 +18,8 @@ export function statusDaUf(u: UfResumo, coleta: EstadoColeta): StatusUf {
 // concluída para o progresso, mas aparece separada, nunca como "ok".
 // `ufs` (opcional) limita o estado às UFs da configuração atual; o manifest pode ter outras.
 export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres, ufs: filtro }: {
-  manifest: Manifest;
-  coletor: Coletor;
+  manifest: Pick<Manifest, 'ufs' | 'resumoPorUf' | 'errosRecentes' | 'eventos' | 'erro'>;
+  coletor: Pick<Coletor, 'estado' | 'velocidadeBps'>;
   pastaDados: string;
   bytesLivres: (pasta: string) => Promise<number>;
   ufs?: string[];

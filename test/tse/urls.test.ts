@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { criarUrls, nomeConfigSecoes, nomeIndiceSecao } from '../../src/tse/urls.ts';
 import { FX } from '../helpers/fakeTse.ts';
+import type { SecaoComCiclo } from '../../src/tse/urls.ts';
 
 const templates = {
   cs: '<base>/<ambiente>/<ciclo>/arquivo-urna/<cd_pleito>/config/<uf>',
@@ -34,5 +35,5 @@ test('template com variável desconhecida falha alto', () => {
 });
 
 test('valor ausente falha alto', () => {
-  assert.throws(() => urls.indiceSecao({ ciclo: 'ele2026', pleito: '3220', uf: 'ac', zona: '0004', secao: '0077' }), /<municipio>/);
+  assert.throws(() => urls.indiceSecao({ ciclo: 'ele2026', pleito: '3220', uf: 'ac', zona: '0004', secao: '0077' } as SecaoComCiclo), /<municipio>/);
 });

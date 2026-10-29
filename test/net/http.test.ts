@@ -2,20 +2,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpClient, HttpError } from '../../src/net/http.ts';
 
-function fetchRoteirizado(respostas) {
-  const chamadas = [];
-  const fetchImpl = async (url, opcoes) => {
+type Roteiro = { status: number; body?: string; headers?: Record<string, string> } | Error;
+
+function fetchRoteirizado(respostas: Roteiro[]) {
+  const chamadas: { url: string; opcoes: { headers: Record<string, string>; signal: AbortSignal } }[] = [];
+  const fetchImpl = (async (url: string, opcoes: { headers: Record<string, string>; signal: AbortSignal }) => {
     chamadas.push({ url, opcoes });
-    const r = respostas.shift();
+    const r = respostas.shift()!;
     if (r instanceof Error) throw r;
     return new Response(r.body ?? '', { status: r.status, headers: r.headers ?? {} });
-  };
+  }) as unknown as typeof fetch;
   return { fetchImpl, chamadas };
 }
 
 function semEspera() {
-  const esperas = [];
-  return { esperas, dormir: async (ms) => { esperas.push(ms); } };
+  const esperas: number[] = [];
+  return { esperas, dormir: async (ms: number) => { esperas.push(ms); } };
 }
 
 test('devolve status, corpo e etag em 200 e envia o User-Agent', async () => {
@@ -99,9 +101,10 @@ test('erro de rede preserva a causa raiz na mensagem e em cause', async () => {
   const erro = Object.assign(new TypeError('fetch failed'), { cause: causa });
   const { fetchImpl } = fetchRoteirizado([erro]);
   await assert.rejects(new HttpClient({ fetchImpl, tentativas: 1 }).get('http://x/a'), (err) => {
+    assert.ok(err instanceof HttpError);
     assert.equal(err.name, 'HttpError');
     assert.match(err.message, /ECONNRESET/);
-    assert.equal(err.cause.cause, causa);
+    assert.equal((err.cause as Error).cause, causa);
     return true;
   });
 });
@@ -119,19 +122,19 @@ test('libera o slot depois de esgotar as tentativas', { timeout: 2000 }, async (
 });
 
 test('429 pausa o cliente inteiro, não só a requisição afetada', async () => {
-  const eventos = [];
+  const eventos: string[] = [];
   let primeira = true;
-  let p2;
-  const fetchImpl = async (url) => {
+  let p2: Promise<unknown> | undefined;
+  const fetchImpl = (async (url: string) => {
     eventos.push(`fetch:${url}`);
     if (url.endsWith('/a') && primeira) {
       primeira = false;
       return new Response('', { status: 429, headers: { 'retry-after': '7' } });
     }
     return new Response('ok');
-  };
-  let http;
-  const dormir = async (ms) => {
+  }) as typeof fetch;
+  let http: HttpClient;
+  const dormir = async (ms: number) => {
     eventos.push(`dormir:${ms}`);
     if (!p2) p2 = http.get('http://x/b'); // outra requisição começa durante a pausa
   };

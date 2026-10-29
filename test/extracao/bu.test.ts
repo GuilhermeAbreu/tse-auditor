@@ -13,11 +13,11 @@ test('BU real do 1º turno (AC 01066/0004/0077)', () => {
   assert.equal(bu.comparecimento, 234);
   assert.deepEqual([bu.qtdHabilitacaoAnoNascimento, bu.qtdHabilitacaoBiometrica, bu.qtdHabilitacaoMesario], [9, 212, 13]);
   const pres = bu.resultados.find((r) => r.cargo === 'Presidente');
-  assert.equal(pres.aptos, 289);
-  assert.equal(pres.votos.reduce((s, v) => s + v.quantidade, 0), 234);
-  assert.deepEqual(pres.votos.find((v) => v.tipo === 'nulo').quantidade, 13);
+  assert.equal(pres!.aptos, 289);
+  assert.equal(pres!.votos.reduce((s, v) => s + v.quantidade!, 0), 234);
+  assert.deepEqual(pres!.votos.find((v) => v.tipo === 'nulo')!.quantidade, 13);
   const sen = bu.resultados.find((r) => r.cargo === 'Senador');
-  assert.equal(sen.votos.reduce((s, v) => s + v.quantidade, 0), 468); // 2 vagas
+  assert.equal(sen!.votos.reduce((s, v) => s + v.quantidade!, 0), 468); // 2 vagas
   assert.equal(bu.resultados.length, 5);
 });
 

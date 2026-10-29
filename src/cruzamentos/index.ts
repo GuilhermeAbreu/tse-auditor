@@ -22,7 +22,7 @@ const COLUNAS = [
 export async function rodarCruzamentos(db: DuckDBConnection, { uf, turnos }: { uf: string; turnos: Turnos }): Promise<Achado[]> {
   await prepararContexto(db, { uf });
   const todos: Achado[] = [];
-  for (const c of CRUZAMENTOS) todos.push(...((await c.executar(db, { uf, turnos })) as unknown as Achado[]));
+  for (const c of CRUZAMENTOS) todos.push(...(await c.executar(db, { uf, turnos })));
   return todos;
 }
 

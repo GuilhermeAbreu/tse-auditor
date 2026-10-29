@@ -12,10 +12,24 @@ import { buscarEleicoes } from '../../src/tse/eleicoes.ts';
 import { criarUrls } from '../../src/tse/urls.ts';
 import { FX, iniciarFakeTse, lerFixture } from '../helpers/fakeTse.ts';
 import { lerZip } from '../helpers/zip.ts';
+import type { TestContext } from 'node:test';
+import type { Falha, FakeTse } from '../helpers/fakeTse.ts';
+import type { ClienteHttp, RespostaHttp } from '../../src/tipos/dominio.ts';
+
+interface OpcoesMontar {
+  falhas?: Record<string, Falha[]>;
+  bytesLivres?: (pasta: string) => Promise<number>;
+  ufs?: string[];
+  pleitos?: string[];
+  subpastaDados?: string;
+  envolverHttp?: (http: ClienteHttp) => ClienteHttp;
+  limiteFalhasRede?: number;
+  tentativasVerificacao?: number;
+}
 
 const S77 = FX.secao('3220');
 
-async function montar(t, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados, envolverHttp, limiteFalhasRede, tentativasVerificacao } = {}) {
+async function montar(t: TestContext, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados, envolverHttp, limiteFalhasRede, tentativasVerificacao }: OpcoesMontar = {}) {
   const fake = await iniciarFakeTse({ falhas });
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-coletor-'));
   const dados = subpastaDados ? path.join(dir, subpastaDados) : dir;
@@ -52,7 +66,7 @@ test('planejar grava as configs em raw/ e registra as seções', async (t) => {
   );
   assert.deepEqual(manifest.secoesPendentes('3220', 'ac', '01066').map((s) => s.secao), ['0077', '0078', '0079']);
   assert.deepEqual(manifest.secoesPendentes('3221', 'ac', '01066').map((s) => s.secao), ['0077']);
-  assert.equal(manifest.secao({ ...S77, secao: '0270' }).status, 'agregada');
+  assert.equal(manifest.secao({ ...S77, secao: '0270' })!.status, 'agregada');
   assert.deepEqual(manifest.ufs().map((u) => u.uf), ['ac']);
 });
 
@@ -63,8 +77,8 @@ test('planejar registra aviso quando a UF não tem config no pleito', async (t) 
   assert.equal(manifest.eventos(1)[0].nivel, 'aviso');
 });
 
-const nomeArquivo = (pleito, sufixo) => `o0${pleito}ac0106600040077-${sufixo}`;
-const requisicoesDe = (fake, sufixo) => fake.requisicoes.filter((r) => r.endsWith(sufixo));
+const nomeArquivo = (pleito: string, sufixo: string) => `o0${pleito}ac0106600040077-${sufixo}`;
+const requisicoesDe = (fake: FakeTse, sufixo: string) => fake.requisicoes.filter((r) => r.endsWith(sufixo));
 
 test('processarSecao baixa e verifica todos os arquivos', async (t) => {
   const { dados, manifest, coletor } = await montar(t);
@@ -72,13 +86,13 @@ test('processarSecao baixa e verifica todos os arquivos', async (t) => {
   await coletor.processarSecao(S77);
 
   const secao = manifest.secao(S77);
-  assert.equal(secao.status, 'completa');
+  assert.equal(secao!.status, 'completa');
   const arquivos = manifest.arquivosDaSecao(S77);
   assert.deepEqual(
     arquivos.map((a) => [a.tipo, a.status, a.verificacao]).sort(),
     [['bu', 'ok', 'vsc'], ['log', 'ok', 'vsc'], ['rdv', 'ok', 'vsc'], ['vota', 'ok', 'dir']],
   );
-  assert.equal(secao.bytes, arquivos.reduce((t, a) => t + a.bytes, 0));
+  assert.equal(secao!.bytes, arquivos.reduce((t, a) => t + a.bytes!, 0));
 
   const staging = path.join(dados, 'staging/AC/3220/01066/0004/0077');
   assert.deepEqual(
@@ -94,60 +108,60 @@ test('seção sem índice no servidor fica com erro', async (t) => {
   await coletor.planejar();
   await coletor.processarSecao(FX.secao('3220', '0078'));
   const secao = manifest.secao(FX.secao('3220', '0078'));
-  assert.equal(secao.status, 'erro');
-  assert.equal(secao.erro, 'índice: HTTP 404');
+  assert.equal(secao!.status, 'erro');
+  assert.equal(secao!.erro, 'índice: HTTP 404');
 });
 
 test('seção sem arquivos fica como sem_arquivos', async (t) => {
   const { manifest, coletor } = await montar(t);
   await coletor.planejar();
   await coletor.processarSecao(FX.secao('3220', '0079'));
-  assert.equal(manifest.secao(FX.secao('3220', '0079')).status, 'sem_arquivos');
+  assert.equal(manifest.secao(FX.secao('3220', '0079'))!.status, 'sem_arquivos');
 });
 
 test('arquivo corrompido em trânsito é baixado de novo', async (t) => {
   const { fake, manifest, coletor } = await montar(t, { falhas: { [nomeArquivo('3220', 'bu.dat')]: ['corromper'] } });
   await coletor.planejar();
   await coletor.processarSecao(S77);
-  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.equal(manifest.secao(S77)!.status, 'completa');
   assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 2);
 });
 
 test('tentativasVerificacao = 1 não baixa de novo o arquivo corrompido', async (t) => {
-  const falhas = { [nomeArquivo('3220', 'bu.dat')]: ['corromper'] };
+  const falhas: Record<string, Falha[]> = { [nomeArquivo('3220', 'bu.dat')]: ['corromper'] };
   const { fake, manifest, coletor } = await montar(t, { falhas, tentativasVerificacao: 1 });
   await coletor.planejar();
   await coletor.processarSecao(S77);
   assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 1);
-  assert.equal(manifest.secao(S77).status, 'erro');
+  assert.equal(manifest.secao(S77)!.status, 'erro');
 });
 
 test('corrupção persistente marca o arquivo e a seção com erro', async (t) => {
-  const falhas = { [nomeArquivo('3220', 'bu.dat')]: ['corromper', 'corromper', 'corromper'] };
+  const falhas: Record<string, Falha[]> = { [nomeArquivo('3220', 'bu.dat')]: ['corromper', 'corromper', 'corromper'] };
   const { fake, manifest, coletor } = await montar(t, { falhas });
   await coletor.planejar();
   await coletor.processarSecao(S77);
   const bu = manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'bu');
-  assert.equal(bu.status, 'erro');
-  assert.equal(bu.erro, 'md5 não confere com o ETag');
+  assert.equal(bu!.status, 'erro');
+  assert.equal(bu!.erro, 'md5 não confere com o ETag');
   assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 3);
   const secao = manifest.secao(S77);
-  assert.equal(secao.status, 'erro');
-  assert.equal(secao.erro, `${nomeArquivo('3220', 'bu.dat')}: md5 não confere com o ETag`);
+  assert.equal(secao!.status, 'erro');
+  assert.equal(secao!.erro, `${nomeArquivo('3220', 'bu.dat')}: md5 não confere com o ETag`);
 });
 
 test('bu cujo sha512 não consta no .vsc é rejeitado', async (t) => {
-  const falhas = { [nomeArquivo('3220', 'bu.dat')]: ['corromperComEtag', 'corromperComEtag', 'corromperComEtag'] };
+  const falhas: Record<string, Falha[]> = { [nomeArquivo('3220', 'bu.dat')]: ['corromperComEtag', 'corromperComEtag', 'corromperComEtag'] };
   const { manifest, coletor } = await montar(t, { falhas });
   await coletor.planejar();
   await coletor.processarSecao(S77);
   const bu = manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'bu');
-  assert.equal(bu.status, 'erro');
-  assert.equal(bu.erro, 'sha512 não consta no .vsc');
+  assert.equal(bu!.status, 'erro');
+  assert.equal(bu!.erro, 'sha512 não consta no .vsc');
 });
 
 test('.vsc que não confere com o hash do diretório invalida o conjunto', async (t) => {
-  const falhas = { [nomeArquivo('3220', 'vota.vsc')]: ['corromperComEtag', 'corromperComEtag', 'corromperComEtag'] };
+  const falhas: Record<string, Falha[]> = { [nomeArquivo('3220', 'vota.vsc')]: ['corromperComEtag', 'corromperComEtag', 'corromperComEtag'] };
   const { fake, manifest, coletor } = await montar(t, { falhas });
   await coletor.planejar();
   await coletor.processarSecao(S77);
@@ -156,20 +170,20 @@ test('.vsc que não confere com o hash do diretório invalida o conjunto', async
   assert.equal(porTipo.bu.status, 'erro');
   assert.equal(porTipo.bu.erro, '.vsc inválido; arquivo não baixado');
   assert.equal(requisicoesDe(fake, nomeArquivo('3220', 'bu.dat')).length, 0);
-  assert.equal(manifest.secao(S77).status, 'erro');
+  assert.equal(manifest.secao(S77)!.status, 'erro');
 });
 
-const requisicoesDeDados = (fake) => fake.requisicoes.filter((r) => r.includes('/dados/'));
+const requisicoesDeDados = (fake: FakeTse) => fake.requisicoes.filter((r) => r.includes('/dados/'));
 
 test('executar coleta a UF, os dois turnos, e empacota por município', async (t) => {
   const { dados, manifest, coletor } = await montar(t);
   await coletor.executar();
-  assert.equal(coletor.estado.motivoParada, 'concluída');
+  assert.equal(coletor.estado.motivoParada!, 'concluída');
   assert.equal(coletor.estado.rodando, false);
 
   const zip1 = await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'));
   const bu = `0004/0077/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`;
-  assert.deepEqual(zip1.get(bu).dados, await lerFixture(`${FX.dirSecao('3220')}/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`));
+  assert.deepEqual(zip1.get(bu)!.dados, await lerFixture(`${FX.dirSecao('3220')}/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`));
   assert.ok(zip1.has('0004/0077/p003220-ac-m01066-z0004-s0077-aux.json'));
   assert.ok(zip1.has('0004/0079/p003220-ac-m01066-z0004-s0079-aux.json'));
   assert.equal(zip1.size, 6, '4 arquivos + 2 índices');
@@ -177,7 +191,7 @@ test('executar coleta a UF, os dois turnos, e empacota por município', async (t
   const zip2 = await lerZip(path.join(dados, 'raw/AC/3221/01066.zip'));
   assert.equal(zip2.size, 5);
   await assert.rejects(access(path.join(dados, 'staging/AC/3220/01066')));
-  assert.ok(manifest.municipio('3220', 'ac', '01066').empacotado_em);
+  assert.ok(manifest.municipio('3220', 'ac', '01066')!.empacotado_em);
   assert.equal(manifest.eventos(1)[0].msg, 'coleta concluída');
 });
 
@@ -192,17 +206,17 @@ test('segunda execução só retenta o que falhou', async (t) => {
 });
 
 test('arquivo que falhou numa execução entra no zip na seguinte', async (t) => {
-  const falhas = { [nomeArquivo('3220', 'bu.dat')]: ['corromper', 'corromper', 'corromper'] };
+  const falhas: Record<string, Falha[]> = { [nomeArquivo('3220', 'bu.dat')]: ['corromper', 'corromper', 'corromper'] };
   const { dados, manifest, coletor } = await montar(t, { falhas });
   const caminhoZip = path.join(dados, 'raw/AC/3220/01066.zip');
   const bu = `0004/0077/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`;
 
   await coletor.executar();
-  assert.equal(manifest.secao(S77).status, 'erro');
+  assert.equal(manifest.secao(S77)!.status, 'erro');
   assert.ok(!(await lerZip(caminhoZip)).has(bu));
 
   await coletor.executar();
-  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.equal(manifest.secao(S77)!.status, 'completa');
   const zip = await lerZip(caminhoZip);
   assert.ok(zip.has(bu));
   assert.equal(zip.size, 6);
@@ -211,7 +225,7 @@ test('arquivo que falhou numa execução entra no zip na seguinte', async (t) =>
 test('para por falta de espaço antes de baixar arquivos', async (t) => {
   const { fake, coletor } = await montar(t, { bytesLivres: async () => 0 });
   await coletor.executar();
-  assert.match(coletor.estado.motivoParada, /espaço livre abaixo do mínimo/);
+  assert.match(coletor.estado.motivoParada!, /espaço livre abaixo do mínimo/);
   assert.deepEqual(requisicoesDeDados(fake), []);
 });
 
@@ -220,7 +234,7 @@ test('UF pausada não é coletada; retomar inicia a coleta', async (t) => {
   manifest.registrarUfs(['ac']);
   coletor.pausar('ac');
   await coletor.executar();
-  assert.equal(coletor.estado.motivoParada, 'concluída');
+  assert.equal(coletor.estado.motivoParada!, 'concluída');
   assert.deepEqual(requisicoesDeDados(fake), []);
 
   await coletor.retomar('ac');
@@ -232,14 +246,14 @@ test('parar interrompe a execução', async (t) => {
   const execucao = coletor.executar();
   coletor.parar();
   await execucao;
-  assert.equal(coletor.estado.motivoParada, 'parada solicitada');
+  assert.equal(coletor.estado.motivoParada!, 'parada solicitada');
   assert.deepEqual(requisicoesDeDados(fake), []);
 });
 
 test('HD inacessível interrompe com mensagem clara', async (t) => {
   const { manifest, coletor } = await montar(t, { subpastaDados: 'hd-desconectado' });
   await coletor.executar();
-  assert.match(coletor.estado.motivoParada, /^HD inacessível: .*O HD está conectado\?/);
+  assert.match(coletor.estado.motivoParada!, /^HD inacessível: .*O HD está conectado\?/);
   assert.equal(manifest.eventos(1)[0].nivel, 'erro');
 });
 
@@ -254,12 +268,13 @@ test('zip corrompido é posto de lado e refeito a partir do staging', async (t) 
   await coletor.executar();
   assert.ok((await readdir(pasta)).some((n) => n.startsWith('01066.zip.corrompido-')));
   assert.equal((await lerZip(caminhoZip)).size, 6);
-  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.equal(manifest.secao(S77)!.status, 'completa');
   assert.ok(manifest.eventos(20).some((e) => e.nivel === 'aviso' && /zip corrompido/.test(e.msg)));
 });
 
 // http falso: responde `resposta(url)` quando ela devolve algo; senão delega ao cliente real.
-const interceptar = (resposta) => (real) => ({ get: async (url) => (await resposta(url)) ?? real.get(url) });
+type Resposta = (url: string) => Promise<RespostaHttp | null | undefined> | RespostaHttp | null | undefined;
+const interceptar = (resposta: Resposta) => (real: ClienteHttp): ClienteHttp => ({ get: async (url) => (await resposta(url)) ?? real.get(url) });
 
 test('staging que não confere com o manifest é descartado e refeito', async (t) => {
   const { dados, manifest, coletor } = await montar(t);
@@ -271,12 +286,12 @@ test('staging que não confere com o manifest é descartado e refeito', async (t
 
   await coletor.executar();
   assert.ok(manifest.eventos(50).some((e) => e.nivel === 'aviso' && /não confere/.test(e.msg)));
-  assert.equal(manifest.secao(S77).status, 'erro');
+  assert.equal(manifest.secao(S77)!.status, 'erro');
 
   await coletor.executar();
-  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.equal(manifest.secao(S77)!.status, 'completa');
   const zip = await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'));
-  assert.deepEqual(zip.get(`0004/0077/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`).dados, original);
+  assert.deepEqual(zip.get(`0004/0077/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`)!.dados, original);
 });
 
 test('índice com hash ou nome de arquivo inválido marca a seção com erro', async (t) => {
@@ -287,13 +302,13 @@ test('índice com hash ou nome de arquivo inválido marca a seção com erro', a
   ];
   for (const indice of ruins) {
     const { manifest, coletor } = await montar(t, {
-      envolverHttp: interceptar((url) => (url.endsWith('s0077-aux.json')
+      envolverHttp: interceptar((url: string) => (url.endsWith('s0077-aux.json')
         ? { status: 200, body: Buffer.from(JSON.stringify(indice)), etag: null } : null)),
     });
     await coletor.planejar();
     await coletor.processarSecao(S77);
-    assert.equal(manifest.secao(S77).status, 'erro');
-    assert.match(manifest.secao(S77).erro, /^índice inválido: /);
+    assert.equal(manifest.secao(S77)!.status, 'erro');
+    assert.match(manifest.secao(S77)!.erro!, /^índice inválido: /);
   }
 });
 
@@ -318,7 +333,7 @@ test('UF retomada durante a execução é coletada na mesma execução', async (
   });
   await coletor.executar();
   assert.ok(retomou);
-  assert.equal(coletor.estado.motivoParada, 'concluída');
+  assert.equal(coletor.estado.motivoParada!, 'concluída');
   assert.equal((await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'))).size, 6);
 });
 
@@ -326,7 +341,7 @@ test('verificação "nenhuma" quando não há ETag nem .vsc', async (t) => {
   const corpo = { com: Buffer.from('com etag'), sem: Buffer.from('sem etag') };
   const indice = { st: 'x', hashes: [{ hash: 'abc123', arq: [{ nm: 'a.dat', tp: 'xx' }, { nm: 'b.dat', tp: 'xx' }] }] };
   const { manifest, coletor } = await montar(t, {
-    envolverHttp: interceptar((url) => {
+    envolverHttp: interceptar((url: string) => {
       if (url.endsWith('s0077-aux.json')) return { status: 200, body: Buffer.from(JSON.stringify(indice)), etag: null };
       if (url.endsWith('/a.dat')) return { status: 200, body: corpo.com, etag: `"${createHash('md5').update(corpo.com).digest('hex')}"` };
       if (url.endsWith('/b.dat')) return { status: 200, body: corpo.sem, etag: null };
@@ -337,7 +352,7 @@ test('verificação "nenhuma" quando não há ETag nem .vsc', async (t) => {
   await coletor.processarSecao(S77);
   const por = Object.fromEntries(manifest.arquivosDaSecao(S77).map((a) => [a.nome, a.verificacao]));
   assert.deepEqual(por, { 'a.dat': 'md5', 'b.dat': 'nenhuma' });
-  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.equal(manifest.secao(S77)!.status, 'completa');
 });
 
 test('segunda execução não reempacota quando nada novo foi baixado', async (t) => {
@@ -357,20 +372,20 @@ test('segunda execução não reempacota quando nada novo foi baixado', async (t
 test('falhas de rede seguidas interrompem a coleta', async (t) => {
   const { coletor, manifest } = await montar(t, {
     limiteFalhasRede: 3,
-    envolverHttp: interceptar((url) => {
+    envolverHttp: interceptar((url: string) => {
       if (url.includes('/dados/')) throw new HttpError('falha de rede: ECONNREFUSED', { url });
       return null;
     }),
   });
   await coletor.executar();
-  assert.match(coletor.estado.motivoParada, /^sem conexão com o TSE: 3 falhas de rede seguidas; coleta interrompida$/);
+  assert.match(coletor.estado.motivoParada!, /^sem conexão com o TSE: 3 falhas de rede seguidas; coleta interrompida$/);
   assert.equal(manifest.eventos(1)[0].nivel, 'erro');
   assert.ok(new SemConexaoError('x') instanceof Error);
 });
 
 test('planejar ignora UF com status inesperado em vez de abortar', async (t) => {
   const { manifest, coletor } = await montar(t, {
-    envolverHttp: interceptar((url) => (url.includes('/config/') && url.includes('-p003221-')
+    envolverHttp: interceptar((url: string) => (url.includes('/config/') && url.includes('-p003221-')
       ? { status: 403, body: Buffer.alloc(0), etag: null } : null)),
   });
   await coletor.planejar();
@@ -383,7 +398,7 @@ test('arquivo no staging sem registro ok e índice truncado não entram no zip',
   const { dados, manifest, coletor } = await montar(t, { falhas: { [bu]: Array(6).fill('corromper') } });
   await coletor.planejar();
   await coletor.processarSecao(S77);
-  assert.equal(manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'bu').status, 'erro');
+  assert.equal(manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'bu')!.status, 'erro');
   const pasta = path.join(dados, 'staging/AC/3220/01066/0004/0077');
   await writeFile(path.join(pasta, FX.hash3220, bu), Buffer.from('falso'));
   await writeFile(path.join(pasta, 'p003220-ac-m01066-z0004-s0077-aux.json'), Buffer.from('{"hashes": ['));
@@ -405,10 +420,10 @@ test('arquivo ok ausente do staging e do zip é rebaixado', async (t) => {
 
   await coletor.executar();
   assert.ok(manifest.eventos(50).some((e) => e.nivel === 'aviso' && /ausente/.test(e.msg)));
-  assert.equal(manifest.secao(S77).status, 'erro');
+  assert.equal(manifest.secao(S77)!.status, 'erro');
 
   await coletor.executar();
-  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.equal(manifest.secao(S77)!.status, 'completa');
   const zip = await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'));
-  assert.deepEqual(zip.get(`0004/0077/${FX.hash3220}/${bu}`).dados, original);
+  assert.deepEqual(zip.get(`0004/0077/${FX.hash3220}/${bu}`)!.dados, original);
 });
