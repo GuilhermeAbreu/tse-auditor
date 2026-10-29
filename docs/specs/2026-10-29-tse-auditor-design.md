@@ -13,7 +13,7 @@ Primeiro alvo: eleição presidencial de 2026, 1º e 2º turnos, Brasil inteiro 
 
 - **Fontes:** apenas fontes oficiais do TSE (`resultados.tse.jus.br`, `dadosabertos.tse.jus.br`, documentação técnica do TSE).
 - **Armazenamento:** HD externo em `/media/guilherme/Novo volume` (o caminho tem espaço, então sempre usar aspas). É NTFS, com ~466 GB livres (esvaziado pelo usuário em 29/10/2026); mesmo assim, o projeto não mexe em nada fora da sua pasta. Tudo do projeto fica em `<HD>/tse2026/` (ou `<HD>/tse<ano>/`).
-- **Volume estimado:** ~500 mil seções × 2 turnos, entre 100 e 300 GB. A estimativa precisa ser confirmada depois do primeiro estado.
+- **Volume medido:** AC (pleitos 3220 + 3221) ocupou 884 MB em 4.540 seções (~202 KB por seção/turno; log ~125 KB, .vsc ~63 KB, RDV ~9 KB, BU ~6 KB). Projeção para o Brasil nos dois turnos: ~190 GB. Confirmado em 29/10/2026.
 - **Ambiente:** Node 22. Sem 7z nem duckdb no sistema; usar `7zip-bin` e `@duckdb/node-api` (binários embutidos via npm).
 - **Servidor do TSE:** respeitar os limites de requisição.
 
