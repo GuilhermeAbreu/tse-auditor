@@ -22,7 +22,7 @@ Estes formatos foram verificados contra `resultados.tse.jus.br` e são a base do
 - Arquivo: `<dir aux>/<hash>/<nm>`.
 - Integridade:
   - `ETag` = MD5 do conteúdo (aspas incluídas).
-  - `hash` do diretório = hex do texto base64 (com `-` url-safe) do **sha256 do `-vota.vsc`**.
+  - `hash` do diretório = hex do texto base64 do **sha256 do `-vota.vsc`**. Atenção: o TSE troca `/` por `-` (não é o base64url padrão, em que `-` vale `+`); decodificar com `Buffer.from(x, 'base64')` direto dá o digest errado.
   - O `.vsc` (binário ASN.1) contém o **sha512** de `bu.dat`, `rdv.dat` e `log.jez`.
 - Cabeçalhos: `x-ratelimit-limit: 5000`. Tamanho típico: ~190 KB por seção por turno, ou seja, ~200 GB para o Brasil nos dois turnos.
 - Pleito 3220 = 1º turno (04/10/2026), 3221 = 2º turno (25/10/2026). SP tem 645 municípios e 103.904 seções (config de 6 MB).
