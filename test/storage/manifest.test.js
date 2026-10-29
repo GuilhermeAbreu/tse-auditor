@@ -115,3 +115,42 @@ test('persiste entre aberturas', async (t) => {
   t.after(() => reaberto.fechar());
   assert.equal(reaberto.secao(S77).status, 'completa');
 });
+
+const contar = (m, status) => m.db.prepare('SELECT COUNT(*) AS n FROM arquivos WHERE status = ?').get(status).n;
+
+test('marcarArquivo é gravado em lote: só aparece após descarregar', async (t) => {
+  const { m } = await novoManifest(t);
+  m.registrarConfig('3220', 'ac', MUNICIPIOS);
+  m.registrarIndice(S77, CONJUNTOS, (hash, nome) => `http://x/${hash}/${nome}`);
+  m.marcarArquivo(S77, 'h1', 'a-bu.dat', { status: 'ok', bytes: 10 });
+  assert.equal(contar(m, 'ok'), 0, 'ainda na fila');
+  m.descarregar();
+  assert.equal(contar(m, 'ok'), 1);
+});
+
+test('fechar grava a fila pendente', async (t) => {
+  const { m, caminho } = await novoManifest(t);
+  m.registrarConfig('3220', 'ac', MUNICIPIOS);
+  m.finalizarSecao(S77, { status: 'completa', bytes: 7 });
+  m.fechar();
+  const reaberto = new Manifest(caminho);
+  t.after(() => reaberto.fechar());
+  assert.equal(reaberto.secao(S77).bytes, 7);
+});
+
+test('reabrirMunicipio devolve seções e arquivos à fila e limpa o empacotamento', async (t) => {
+  const { m } = await novoManifest(t);
+  m.registrarConfig('3220', 'ac', MUNICIPIOS);
+  m.registrarIndice(S77, CONJUNTOS, (hash, nome) => `http://x/${hash}/${nome}`);
+  m.marcarArquivo(S77, 'h1', 'a-bu.dat', { status: 'ok', bytes: 10 });
+  m.finalizarSecao(S77, { status: 'completa', bytes: 10 });
+  m.marcarEmpacotado('3220', 'ac', '01066', 99);
+  m.reabrirMunicipio('3220', 'ac', '01066');
+  assert.equal(m.secao(S77).status, 'pendente');
+  assert.equal(m.secao(S77).bytes, 0);
+  assert.equal(m.secao({ ...S77, secao: '0270' }).status, 'agregada');
+  assert.equal(contar(m, 'ok'), 0);
+  const mun = m.municipio('3220', 'ac', '01066');
+  assert.equal(mun.empacotado_em, null);
+  assert.equal(mun.zip_bytes, null);
+});

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { empacotarMunicipio } from '../../src/storage/empacotar.js';
+import { ZipCorrompidoError, empacotarMunicipio } from '../../src/storage/empacotar.js';
 import { lerZip } from '../helpers/zip.js';
 
 async function preparar(arquivos) {
@@ -53,4 +53,29 @@ test('sem staging e sem zip gera zip vazio', async () => {
   const r = await empacotarMunicipio({ pastaStaging: path.join(dir, 'nada'), caminhoZip });
   assert.equal(r.entradas, 0);
   assert.equal((await lerZip(caminhoZip)).size, 0);
+});
+
+test('zip existente corrompido é separado, o staging é preservado e o erro é claro', async () => {
+  const { pastaStaging, caminhoZip } = await preparar({ a: '1' });
+  await mkdir(path.dirname(caminhoZip), { recursive: true });
+  await writeFile(caminhoZip, 'lixo que não é zip');
+  await assert.rejects(empacotarMunicipio({ pastaStaging, caminhoZip }), (err) => {
+    assert.ok(err instanceof ZipCorrompidoError);
+    assert.equal(err.caminhoZip, caminhoZip);
+    return true;
+  });
+  const nomes = await readdir(path.dirname(caminhoZip));
+  assert.equal(nomes.length, 1);
+  assert.match(nomes[0], /^01066\.zip\.corrompido-\d+$/);
+  await access(path.join(pastaStaging, 'a'));
+});
+
+test('recusa empacotar sem espaço livre e não deixa .part', async () => {
+  const { pastaStaging, caminhoZip } = await preparar({ a: '1' });
+  await assert.rejects(
+    empacotarMunicipio({ pastaStaging, caminhoZip, bytesLivres: async () => 0 }),
+    /espaço insuficiente para empacotar/,
+  );
+  await access(path.join(pastaStaging, 'a'));
+  await assert.rejects(access(`${caminhoZip}.part`));
 });

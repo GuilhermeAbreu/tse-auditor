@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS conjuntos (
   hash TEXT NOT NULL,
   status TEXT, data TEXT, hora TEXT,
   PRIMARY KEY (pleito, uf, mun, zona, secao, hash)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS arquivos (
   pleito TEXT NOT NULL, uf TEXT NOT NULL, mun TEXT NOT NULL, zona TEXT NOT NULL, secao TEXT NOT NULL,
   hash TEXT NOT NULL, nome TEXT NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS arquivos (
   erro TEXT,
   baixado_em TEXT,
   PRIMARY KEY (pleito, uf, mun, zona, secao, hash, nome)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS eventos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL,
@@ -57,16 +57,24 @@ const ONDE_SECAO = 'pleito = @pleito AND uf = @uf AND mun = @mun AND zona = @zon
 const chave = (s) => ({ pleito: s.pleito, uf: s.uf, mun: s.mun, zona: s.zona, secao: s.secao });
 const agora = () => new Date().toISOString();
 
-// Estado persistente da coleta. Fica no HD, ao lado dos dados; journal em modo DELETE
-// (sem WAL, que depende de memória compartilhada e se dá mal com NTFS) e synchronous FULL,
-// para sobreviver a um HD desconectado no meio de uma escrita.
+const LIMITE_FILA = 500;
+const ATRASO_FILA_MS = 1000;
+const VALIDADE_RESUMO_MS = 5000;
+
+// Estado persistente da coleta. Fica no HD, ao lado dos dados; journal de rollback (TRUNCATE,
+// sem WAL, que depende de memória compartilhada e se dá mal com NTFS) e synchronous NORMAL,
+// que ainda protege contra corrupção. Perder ~1 s das últimas atualizações é seguro, pois
+// o download é refeito. marcarArquivo e finalizarSecao entram numa fila gravada em lote.
 export class Manifest {
   #st;
+  #fila = [];
+  #timer = null;
+  #resumo = null;
 
   constructor(caminho) {
     this.db = new Database(caminho);
-    this.db.pragma('journal_mode = DELETE');
-    this.db.pragma('synchronous = FULL');
+    this.db.pragma('journal_mode = TRUNCATE');
+    this.db.pragma('synchronous = NORMAL');
     this.db.exec(ESQUEMA);
     const p = (sql) => this.db.prepare(sql);
     this.#st = {
@@ -97,34 +105,67 @@ export class Manifest {
       registrarEvento: p('INSERT INTO eventos (ts, nivel, uf, msg) VALUES (?, ?, ?, ?)'),
       eventos: p('SELECT ts, nivel, uf, msg FROM eventos ORDER BY id DESC LIMIT ?'),
       resumoPorUf: p('SELECT uf, status, COUNT(*) AS n, SUM(bytes) AS bytes FROM secoes GROUP BY uf, status'),
+      reabrirSecoes: p(`UPDATE secoes SET status = 'pendente', bytes = 0, erro = NULL
+                        WHERE pleito = ? AND uf = ? AND mun = ? AND status != 'agregada'`),
+      reabrirArquivos: p("UPDATE arquivos SET status = 'pendente' WHERE pleito = ? AND uf = ? AND mun = ?"),
+      reabrirMunicipio: p('UPDATE municipios SET empacotado_em = NULL, zip_bytes = NULL WHERE pleito = ? AND uf = ? AND mun = ?'),
       errosRecentes: p(`SELECT pleito, uf, mun, zona, secao, erro, atualizado_em FROM secoes
                         WHERE status = 'erro' ORDER BY atualizado_em DESC LIMIT ?`),
     };
   }
 
   fechar() {
-    if (this.db.open) this.db.close();
+    if (!this.db.open) return;
+    this.#descarregar();
+    this.db.close();
+  }
+
+  descarregar() {
+    this.#descarregar();
+  }
+
+  #descarregar() {
+    clearTimeout(this.#timer);
+    this.#timer = null;
+    if (this.#fila.length === 0) return;
+    const fila = this.#fila;
+    this.#fila = [];
+    this.db.transaction(() => {
+      for (const [st, params] of fila) st.run(params);
+    })();
+  }
+
+  #enfileirar(st, params) {
+    this.#fila.push([st, params]);
+    if (this.#fila.length >= LIMITE_FILA) return this.#descarregar();
+    this.#timer ??= setTimeout(() => this.#descarregar(), ATRASO_FILA_MS).unref();
   }
 
   registrarUfs(ufs) {
+    this.#descarregar();
     this.db.transaction(() => {
       for (const uf of ufs) this.#st.inserirUf.run(uf, UFS.indexOf(uf));
     })();
   }
 
   ufs() {
+    this.#descarregar();
     return this.#st.ufs.all();
   }
 
   definirPausa(uf, pausada) {
+    this.#descarregar();
     this.#st.definirPausa.run(pausada ? 1 : 0, uf);
   }
 
   ufPausada(uf) {
+    this.#descarregar();
     return this.#st.ufPausada.get(uf)?.pausada === 1;
   }
 
   registrarConfig(pleito, uf, municipios) {
+    this.#descarregar();
+    this.#resumo = null;
     this.db.transaction(() => {
       const ts = agora();
       for (const m of municipios) {
@@ -142,22 +183,27 @@ export class Manifest {
   }
 
   municipiosDaUf(uf) {
+    this.#descarregar();
     return this.#st.municipiosDaUf.all(uf);
   }
 
   municipio(pleito, uf, mun) {
+    this.#descarregar();
     return this.#st.municipio.get(pleito, uf, mun);
   }
 
   secoesPendentes(pleito, uf, mun) {
+    this.#descarregar();
     return this.#st.secoesPendentes.all(pleito, uf, mun);
   }
 
   secao(s) {
+    this.#descarregar();
     return this.#st.secao.get(chave(s));
   }
 
   registrarIndice(s, conjuntos, urlDe) {
+    this.#descarregar();
     this.db.transaction(() => {
       for (const c of conjuntos) {
         this.#st.inserirConjunto.run({ ...chave(s), hash: c.hash, status: c.status, data: c.data, hora: c.hora });
@@ -169,34 +215,54 @@ export class Manifest {
   }
 
   arquivosDaSecao(s) {
+    this.#descarregar();
     return this.#st.arquivosDaSecao.all(chave(s));
   }
 
   marcarArquivo(s, hash, nome, { status, bytes = null, md5 = null, sha512 = null, verificacao = null, erro = null }) {
-    this.#st.marcarArquivo.run({ ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
+    this.#enfileirar(this.#st.marcarArquivo, { ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
   }
 
   finalizarSecao(s, { status, bytes = 0, erro = null }) {
-    this.#st.finalizarSecao.run({ ...chave(s), status, bytes, erro, agora: agora() });
+    this.#resumo = null;
+    this.#enfileirar(this.#st.finalizarSecao, { ...chave(s), status, bytes, erro, agora: agora() });
   }
 
   marcarEmpacotado(pleito, uf, mun, zipBytes) {
+    this.#descarregar();
     this.#st.marcarEmpacotado.run(agora(), zipBytes, pleito, uf, mun);
   }
 
+  reabrirMunicipio(pleito, uf, mun) {
+    this.#descarregar();
+    this.#resumo = null;
+    this.db.transaction(() => {
+      this.#st.reabrirSecoes.run(pleito, uf, mun);
+      this.#st.reabrirArquivos.run(pleito, uf, mun);
+      this.#st.reabrirMunicipio.run(pleito, uf, mun);
+    })();
+  }
+
   registrarEvento(nivel, uf, msg) {
+    this.#descarregar();
     this.#st.registrarEvento.run(agora(), nivel, uf, msg);
   }
 
   eventos(limite) {
+    this.#descarregar();
     return this.#st.eventos.all(limite);
   }
 
   resumoPorUf() {
-    return this.#st.resumoPorUf.all().map((r) => ({ ...r, bytes: r.bytes ?? 0 }));
+    this.#descarregar();
+    if (this.#resumo && Date.now() - this.#resumo.ts < VALIDADE_RESUMO_MS) return this.#resumo.linhas;
+    const linhas = this.#st.resumoPorUf.all().map((r) => ({ ...r, bytes: r.bytes ?? 0 }));
+    this.#resumo = { ts: Date.now(), linhas };
+    return linhas;
   }
 
   errosRecentes(limite) {
+    this.#descarregar();
     return this.#st.errosRecentes.all(limite);
   }
 }

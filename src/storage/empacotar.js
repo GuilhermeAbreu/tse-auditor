@@ -1,12 +1,21 @@
 import yazl from 'yazl';
 import yauzl from 'yauzl';
-import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises';
+import { once } from 'node:events';
 import { finished } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { bytesLivres as bytesLivresPadrao } from './disco.js';
 
 const abrirZip = promisify(yauzl.open);
+
+export class ZipCorrompidoError extends Error {
+  constructor(caminhoZip, causa) {
+    super(`zip existente ilegível (${causa.message}): ${caminhoZip}`);
+    this.caminhoZip = caminhoZip;
+    this.cause = causa;
+  }
+}
 
 async function listarArquivos(pasta) {
   let itens;
@@ -25,15 +34,20 @@ async function listarArquivos(pasta) {
 async function lerEntradas(caminhoZip) {
   const zip = await abrirZip(caminhoZip, { lazyEntries: true, autoClose: false });
   const entradas = [];
-  await new Promise((ok, falha) => {
-    zip.on('entry', (e) => {
-      entradas.push(e);
+  try {
+    await new Promise((ok, falha) => {
+      zip.on('entry', (e) => {
+        entradas.push(e);
+        zip.readEntry();
+      });
+      zip.on('end', ok);
+      zip.on('error', falha);
       zip.readEntry();
     });
-    zip.on('end', ok);
-    zip.on('error', falha);
-    zip.readEntry();
-  });
+  } catch (err) {
+    zip.close();
+    throw err;
+  }
   return { zip, entradas };
 }
 
@@ -48,46 +62,102 @@ async function conferirZip(caminho, esperado) {
   if (problemas.length) throw new Error(`zip inconsistente ${caminho}: ${problemas.join('; ')}`);
 }
 
+async function sincronizarPasta(pasta) {
+  try {
+    const d = await open(pasta, 'r');
+    try {
+      await d.sync();
+    } finally {
+      await d.close();
+    }
+  } catch (err) {
+    // Alguns sistemas de arquivos não suportam fsync de diretório.
+    if (!['EINVAL', 'EISDIR', 'EPERM'].includes(err.code)) throw err;
+  }
+}
+
 // Junta o staging de um município num .zip sem compressão (o NTFS sofre com milhões de arquivos
 // pequenos; o conteúdo fica byte a byte igual ao original). Se o zip já existe, as entradas antigas
 // são copiadas e as do staging têm prioridade. Escreve em .part, confere, renomeia e apaga o staging.
-export async function empacotarMunicipio({ pastaStaging, caminhoZip }) {
+export async function empacotarMunicipio({
+  pastaStaging, caminhoZip, bytesLivres = bytesLivresPadrao, minLivreBytes = 0,
+}) {
   const novos = await listarArquivos(pastaStaging);
   const esperado = new Map();
-  for (const nome of novos) esperado.set(nome, (await stat(path.join(pastaStaging, nome))).size);
-
-  let antigo = null;
-  try {
-    antigo = await lerEntradas(caminhoZip);
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
+  let tamanhoStaging = 0;
+  for (const nome of novos) {
+    const { size } = await stat(path.join(pastaStaging, nome));
+    esperado.set(nome, size);
+    tamanhoStaging += size;
   }
 
-  await mkdir(path.dirname(caminhoZip), { recursive: true });
-  const temporario = `${caminhoZip}.part`;
-  const zip = new yazl.ZipFile();
-  const saida = createWriteStream(temporario);
-  zip.outputStream.pipe(saida);
+  let antigo = null;
+  let tamanhoAntigo = 0;
   try {
-    if (antigo) {
-      const abrir = promisify(antigo.zip.openReadStream.bind(antigo.zip));
-      for (const e of antigo.entradas) {
-        if (e.fileName.endsWith('/') || esperado.has(e.fileName)) continue;
-        esperado.set(e.fileName, e.uncompressedSize);
-        const leitura = await abrir(e);
-        zip.addReadStream(leitura, e.fileName, { compress: false, size: e.uncompressedSize, mtime: e.getLastModDate() });
-        await finished(leitura);
-      }
+    tamanhoAntigo = (await stat(caminhoZip)).size;
+    antigo = await lerEntradas(caminhoZip);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      await rename(caminhoZip, `${caminhoZip}.corrompido-${Date.now()}`);
+      throw new ZipCorrompidoError(caminhoZip, err);
     }
-    for (const nome of novos) zip.addFile(path.join(pastaStaging, nome), nome, { compress: false });
-    zip.end();
-    await finished(saida);
+  }
+
+  const temporario = `${caminhoZip}.part`;
+  let fh;
+  try {
+    await mkdir(path.dirname(caminhoZip), { recursive: true });
+    const necessario = tamanhoAntigo + tamanhoStaging + minLivreBytes;
+    if ((await bytesLivres(path.dirname(caminhoZip))) < necessario) {
+      throw new Error(`espaço insuficiente para empacotar ${caminhoZip}: precisa de ${necessario} bytes`);
+    }
+
+    fh = await open(temporario, 'w');
+    const zip = new yazl.ZipFile();
+    const saida = fh.createWriteStream({ autoClose: false });
+    const falhou = new Promise((_, rejeitar) => {
+      zip.on('error', rejeitar);
+      zip.outputStream.on('error', rejeitar);
+      saida.on('error', rejeitar);
+    });
+    falhou.catch(() => {});
+    const aguardar = (x) => Promise.race([finished(x), falhou]);
+    try {
+      zip.outputStream.pipe(saida);
+      if (antigo) {
+        const abrir = promisify(antigo.zip.openReadStream.bind(antigo.zip));
+        for (const e of antigo.entradas) {
+          if (e.fileName.endsWith('/') || esperado.has(e.fileName)) continue;
+          esperado.set(e.fileName, e.uncompressedSize);
+          const leitura = await abrir(e);
+          zip.addReadStream(leitura, e.fileName, { compress: false, size: e.uncompressedSize, mtime: e.getLastModDate() });
+          await aguardar(leitura);
+        }
+      }
+      for (const nome of novos) zip.addFile(path.join(pastaStaging, nome), nome, { compress: false });
+      zip.end();
+      await Promise.race([once(saida, 'finish'), falhou]);
+      await fh.sync();
+      saida.destroy(); // com autoClose false, libera o stream para o fh.close() não ficar esperando
+    } catch (err) {
+      saida.destroy();
+      zip.outputStream.destroy();
+      throw err;
+    }
+    await fh.close();
+    fh = null;
+
+    await conferirZip(temporario, esperado);
+    await rename(temporario, caminhoZip);
+    await sincronizarPasta(path.dirname(caminhoZip));
+  } catch (err) {
+    await fh?.close().catch(() => {});
+    await rm(temporario, { force: true });
+    throw err;
   } finally {
     antigo?.zip.close();
   }
 
-  await conferirZip(temporario, esperado);
-  await rename(temporario, caminhoZip);
   await rm(pastaStaging, { recursive: true, force: true });
   return { entradas: esperado.size, bytes: (await stat(caminhoZip)).size };
 }
