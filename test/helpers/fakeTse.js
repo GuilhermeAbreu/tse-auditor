@@ -28,20 +28,20 @@ export async function iniciarFakeTse({ falhas = {} } = {}) {
   const requisicoes = [];
   const servidor = http.createServer(async (req, res) => {
     try {
-    const caminho = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    requisicoes.push(caminho);
-    const chave = Object.keys(pendentes).find((k) => caminho.endsWith(k) && pendentes[k].length > 0);
-    const falha = chave ? pendentes[chave].shift() : undefined;
-    if (typeof falha === 'number') {
-      res.writeHead(falha);
-      res.end();
-      return;
-    }
-    let corpo;
-    try {
-      const alvo = path.resolve(RAIZ_FIXTURES, `.${caminho}`);
-      if (!alvo.startsWith(RAIZ_FIXTURES + path.sep)) throw new Error('fora da raiz');
-      corpo = await readFile(alvo);
+      const caminho = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+      requisicoes.push(caminho);
+      const chave = Object.keys(pendentes).find((k) => caminho.endsWith(k) && pendentes[k].length > 0);
+      const falha = chave ? pendentes[chave].shift() : undefined;
+      if (typeof falha === 'number') {
+        res.writeHead(falha);
+        res.end();
+        return;
+      }
+      let corpo;
+      try {
+        const alvo = path.resolve(RAIZ_FIXTURES, `.${caminho}`);
+        if (!alvo.startsWith(RAIZ_FIXTURES + path.sep)) throw new Error('fora da raiz');
+        corpo = await readFile(alvo);
     } catch {
       res.writeHead(404);
       res.end('NoSuchKey');

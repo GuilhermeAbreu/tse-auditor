@@ -8,19 +8,19 @@ export async function lerZip(caminho) {
   const abrir = promisify(zip.openReadStream.bind(zip));
   const conteudo = new Map();
   try {
-  await new Promise((ok, falha) => {
-    zip.on('entry', async (e) => {
-      try {
-        conteudo.set(e.fileName, { dados: await buffer(await abrir(e)), metodo: e.compressionMethod });
-        zip.readEntry();
-      } catch (err) {
-        falha(err);
-      }
+    await new Promise((ok, falha) => {
+      zip.on('entry', async (e) => {
+        try {
+          conteudo.set(e.fileName, { dados: await buffer(await abrir(e)), metodo: e.compressionMethod });
+          zip.readEntry();
+        } catch (err) {
+          falha(err);
+        }
+      });
+      zip.on('end', ok);
+      zip.on('error', falha);
+      zip.readEntry();
     });
-    zip.on('end', ok);
-    zip.on('error', falha);
-    zip.readEntry();
-  });
   } finally {
     zip.close();
   }

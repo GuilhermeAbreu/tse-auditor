@@ -111,7 +111,7 @@ test('valida concorrencia e tentativas', () => {
   assert.throws(() => new HttpClient({ tentativas: 0 }));
 });
 
-test('libera o slot depois de esgotar as tentativas', async () => {
+test('libera o slot depois de esgotar as tentativas', { timeout: 2000 }, async () => {
   const { fetchImpl } = fetchRoteirizado([{ status: 500 }, { status: 200, body: 'ok' }]);
   const http = new HttpClient({ fetchImpl, concorrencia: 1, tentativas: 1 });
   await assert.rejects(http.get('http://x/a'));
