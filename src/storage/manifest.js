@@ -57,21 +57,26 @@ const ONDE_SECAO = 'pleito = @pleito AND uf = @uf AND mun = @mun AND zona = @zon
 const chave = (s) => ({ pleito: s.pleito, uf: s.uf, mun: s.mun, zona: s.zona, secao: s.secao });
 const agora = () => new Date().toISOString();
 
-const LIMITE_FILA = 500;
-const ATRASO_FILA_MS = 1000;
-const VALIDADE_RESUMO_MS = 5000;
+const LIMITE_GRAVACOES = 500;
 
 // Estado persistente da coleta. Fica no HD, ao lado dos dados; journal de rollback (TRUNCATE,
 // sem WAL, que depende de memória compartilhada e se dá mal com NTFS) e synchronous NORMAL,
-// que ainda protege contra corrupção. Perder ~1 s das últimas atualizações é seguro, pois
-// o download é refeito. marcarArquivo e finalizarSecao entram numa fila gravada em lote.
+// que ainda protege contra corrupção. As escritas ficam numa transação aberta, confirmada a
+// cada 500 escritas ou após intervaloCommitMs; perder ~1 s das últimas atualizações é seguro,
+// pois o download é refeito. Leituras usam a mesma conexão e enxergam o que ainda não foi
+// confirmado. Erro no commit por timer é guardado e lançado na próxima chamada pública.
 export class Manifest {
   #st;
-  #fila = [];
   #timer = null;
   #resumo = null;
+  #gravacoes = 0;
+  #erroPendente = null;
+  #intervaloCommitMs;
+  #cacheResumoMs;
 
-  constructor(caminho) {
+  constructor(caminho, { intervaloCommitMs = 1000, cacheResumoMs = 5000 } = {}) {
+    this.#intervaloCommitMs = intervaloCommitMs;
+    this.#cacheResumoMs = cacheResumoMs;
     this.db = new Database(caminho);
     this.db.pragma('journal_mode = TRUNCATE');
     this.db.pragma('synchronous = NORMAL');
@@ -115,56 +120,74 @@ export class Manifest {
   }
 
   fechar() {
-    if (!this.db.open) return;
-    this.#descarregar();
-    this.db.close();
+    try {
+      this.descarregar();
+    } finally {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+      if (this.db.open) this.db.close();
+    }
   }
 
+  // Confirma a transação aberta, se houver.
   descarregar() {
-    this.#descarregar();
-  }
-
-  #descarregar() {
     clearTimeout(this.#timer);
     this.#timer = null;
-    if (this.#fila.length === 0) return;
-    const fila = this.#fila;
-    this.#fila = [];
-    this.db.transaction(() => {
-      for (const [st, params] of fila) st.run(params);
-    })();
+    if (this.db.open && this.db.inTransaction) this.db.exec('COMMIT');
   }
 
-  #enfileirar(st, params) {
-    this.#fila.push([st, params]);
-    if (this.#fila.length >= LIMITE_FILA) return this.#descarregar();
-    this.#timer ??= setTimeout(() => this.#descarregar(), ATRASO_FILA_MS).unref();
+  #verificarErro() {
+    const err = this.#erroPendente;
+    if (err) {
+      this.#erroPendente = null;
+      throw err;
+    }
+  }
+
+  #abrirTransacao() {
+    this.#verificarErro();
+    if (this.db.inTransaction) return;
+    this.db.exec('BEGIN');
+    this.#gravacoes = 0;
+    this.#timer = setTimeout(() => {
+      try {
+        this.descarregar();
+      } catch (err) {
+        this.#erroPendente = err;
+      }
+    }, this.#intervaloCommitMs).unref();
+  }
+
+  #contar() {
+    if (++this.#gravacoes >= LIMITE_GRAVACOES) this.descarregar();
   }
 
   registrarUfs(ufs) {
-    this.#descarregar();
+    this.#abrirTransacao();
     this.db.transaction(() => {
       for (const uf of ufs) this.#st.inserirUf.run(uf, UFS.indexOf(uf));
     })();
+    this.#contar();
   }
 
   ufs() {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.ufs.all();
   }
 
   definirPausa(uf, pausada) {
-    this.#descarregar();
+    this.#abrirTransacao();
     this.#st.definirPausa.run(pausada ? 1 : 0, uf);
+    this.#contar();
   }
 
   ufPausada(uf) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.ufPausada.get(uf)?.pausada === 1;
   }
 
   registrarConfig(pleito, uf, municipios) {
-    this.#descarregar();
+    this.#abrirTransacao();
     this.#resumo = null;
     this.db.transaction(() => {
       const ts = agora();
@@ -180,30 +203,31 @@ export class Manifest {
         }
       }
     })();
+    this.#contar();
   }
 
   municipiosDaUf(uf) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.municipiosDaUf.all(uf);
   }
 
   municipio(pleito, uf, mun) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.municipio.get(pleito, uf, mun);
   }
 
   secoesPendentes(pleito, uf, mun) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.secoesPendentes.all(pleito, uf, mun);
   }
 
   secao(s) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.secao.get(chave(s));
   }
 
   registrarIndice(s, conjuntos, urlDe) {
-    this.#descarregar();
+    this.#abrirTransacao();
     this.db.transaction(() => {
       for (const c of conjuntos) {
         this.#st.inserirConjunto.run({ ...chave(s), hash: c.hash, status: c.status, data: c.data, hora: c.hora });
@@ -212,57 +236,64 @@ export class Manifest {
         }
       }
     })();
+    this.#contar();
   }
 
   arquivosDaSecao(s) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.arquivosDaSecao.all(chave(s));
   }
 
   marcarArquivo(s, hash, nome, { status, bytes = null, md5 = null, sha512 = null, verificacao = null, erro = null }) {
-    this.#enfileirar(this.#st.marcarArquivo, { ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
+    this.#abrirTransacao();
+    this.#st.marcarArquivo.run({ ...chave(s), hash, nome, status, bytes, md5, sha512, verificacao, erro, agora: agora() });
+    this.#contar();
   }
 
   finalizarSecao(s, { status, bytes = 0, erro = null }) {
-    this.#resumo = null;
-    this.#enfileirar(this.#st.finalizarSecao, { ...chave(s), status, bytes, erro, agora: agora() });
+    this.#abrirTransacao();
+    this.#st.finalizarSecao.run({ ...chave(s), status, bytes, erro, agora: agora() });
+    this.#contar();
   }
 
   marcarEmpacotado(pleito, uf, mun, zipBytes) {
-    this.#descarregar();
+    this.#abrirTransacao();
     this.#st.marcarEmpacotado.run(agora(), zipBytes, pleito, uf, mun);
+    this.#contar();
   }
 
   reabrirMunicipio(pleito, uf, mun) {
-    this.#descarregar();
+    this.#abrirTransacao();
     this.#resumo = null;
     this.db.transaction(() => {
       this.#st.reabrirSecoes.run(pleito, uf, mun);
       this.#st.reabrirArquivos.run(pleito, uf, mun);
       this.#st.reabrirMunicipio.run(pleito, uf, mun);
     })();
+    this.#contar();
   }
 
   registrarEvento(nivel, uf, msg) {
-    this.#descarregar();
+    this.#abrirTransacao();
     this.#st.registrarEvento.run(agora(), nivel, uf, msg);
+    this.#contar();
   }
 
   eventos(limite) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.eventos.all(limite);
   }
 
   resumoPorUf() {
-    this.#descarregar();
-    if (this.#resumo && Date.now() - this.#resumo.ts < VALIDADE_RESUMO_MS) return this.#resumo.linhas;
+    this.#verificarErro();
+    if (this.#resumo && Date.now() - this.#resumo.ts < this.#cacheResumoMs) return this.#resumo.linhas;
     const linhas = this.#st.resumoPorUf.all().map((r) => ({ ...r, bytes: r.bytes ?? 0 }));
     this.#resumo = { ts: Date.now(), linhas };
     return linhas;
   }
 
   errosRecentes(limite) {
-    this.#descarregar();
+    this.#verificarErro();
     return this.#st.errosRecentes.all(limite);
   }
 }

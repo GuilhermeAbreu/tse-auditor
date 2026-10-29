@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { Manifest } from '../../src/storage/manifest.js';
 
 const S77 = { pleito: '3220', uf: 'ac', mun: '01066', zona: '0004', secao: '0077' };
@@ -19,10 +20,10 @@ const CONJUNTOS = [{
   arquivos: [{ nome: 'a-bu.dat', tipo: 'bu' }, { nome: 'a-vota.vsc', tipo: 'vota' }],
 }];
 
-async function novoManifest(t) {
+async function novoManifest(t, opcoes) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-manifest-'));
   const caminho = path.join(dir, 'manifest.sqlite');
-  const m = new Manifest(caminho);
+  const m = new Manifest(caminho, opcoes);
   t.after(() => m.fechar());
   return { m, caminho };
 }
@@ -90,7 +91,7 @@ test('municípios empacotados', async (t) => {
 });
 
 test('resumo por UF e eventos', async (t) => {
-  const { m } = await novoManifest(t);
+  const { m } = await novoManifest(t, { cacheResumoMs: 0 });
   m.registrarConfig('3220', 'ac', MUNICIPIOS);
   m.finalizarSecao(S77, { status: 'completa', bytes: 10 });
   const resumo = m.resumoPorUf().sort((a, b) => a.status.localeCompare(b.status));
@@ -118,14 +119,43 @@ test('persiste entre aberturas', async (t) => {
 
 const contar = (m, status) => m.db.prepare('SELECT COUNT(*) AS n FROM arquivos WHERE status = ?').get(status).n;
 
-test('marcarArquivo é gravado em lote: só aparece após descarregar', async (t) => {
-  const { m } = await novoManifest(t);
+test('escritas só ficam visíveis para outra conexão após descarregar', async (t) => {
+  const { m, caminho } = await novoManifest(t);
   m.registrarConfig('3220', 'ac', MUNICIPIOS);
   m.registrarIndice(S77, CONJUNTOS, (hash, nome) => `http://x/${hash}/${nome}`);
-  m.marcarArquivo(S77, 'h1', 'a-bu.dat', { status: 'ok', bytes: 10 });
-  assert.equal(contar(m, 'ok'), 0, 'ainda na fila');
   m.descarregar();
-  assert.equal(contar(m, 'ok'), 1);
+  m.marcarArquivo(S77, 'h1', 'a-bu.dat', { status: 'ok', bytes: 10 });
+  assert.equal(m.arquivosDaSecao(S77)[0].status, 'ok', 'a própria conexão enxerga');
+  const outra = new Database(caminho, { readonly: true, timeout: 0 });
+  t.after(() => outra.close());
+  const lerOutra = () => {
+    try {
+      return outra.prepare("SELECT COUNT(*) AS n FROM arquivos WHERE status = 'ok'").get().n;
+    } catch (err) {
+      if (err.code === 'SQLITE_BUSY') return 0;
+      throw err;
+    }
+  };
+  assert.equal(lerOutra(), 0);
+  m.descarregar();
+  assert.equal(lerOutra(), 1);
+});
+
+test('erro no commit por timer é lançado na próxima chamada e depois some', async (t) => {
+  const { m } = await novoManifest(t, { intervaloCommitMs: 10 });
+  m.registrarUfs(['ac']);
+  const exec = m.db.exec.bind(m.db);
+  let falhou = false;
+  m.db.exec = (sql) => {
+    if (sql === 'COMMIT' && !falhou) {
+      falhou = true;
+      throw new Error('HD desconectado');
+    }
+    return exec(sql);
+  };
+  await new Promise((ok) => setTimeout(ok, 60));
+  assert.throws(() => m.ufs(), /HD desconectado/);
+  assert.equal(m.ufs().length, 1);
 });
 
 test('fechar grava a fila pendente', async (t) => {

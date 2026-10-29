@@ -7,6 +7,11 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { bytesLivres as bytesLivresPadrao } from './disco.js';
 
+// Erros de sistema (EIO, ENOTCONN, EMFILE, EACCES...) trazem code; os do yauzl, de formato, não.
+export function ehErroDeFormatoZip(err) {
+  return !err?.code;
+}
+
 const abrirZip = promisify(yauzl.open);
 
 export class ZipCorrompidoError extends Error {
@@ -72,7 +77,7 @@ async function sincronizarPasta(pasta) {
     }
   } catch (err) {
     // Alguns sistemas de arquivos não suportam fsync de diretório.
-    if (!['EINVAL', 'EISDIR', 'EPERM'].includes(err.code)) throw err;
+    if (!['EINVAL', 'EISDIR', 'EPERM', 'ENOTSUP', 'ENOSYS'].includes(err.code)) throw err;
   }
 }
 
@@ -97,7 +102,11 @@ export async function empacotarMunicipio({
     tamanhoAntigo = (await stat(caminhoZip)).size;
     antigo = await lerEntradas(caminhoZip);
   } catch (err) {
-    if (err.code !== 'ENOENT') {
+    if (err.code === 'ENOENT') {
+      // sem zip anterior
+    } else if (!ehErroDeFormatoZip(err)) {
+      throw err;
+    } else {
       await rename(caminhoZip, `${caminhoZip}.corrompido-${Date.now()}`);
       throw new ZipCorrompidoError(caminhoZip, err);
     }
@@ -105,6 +114,7 @@ export async function empacotarMunicipio({
 
   const temporario = `${caminhoZip}.part`;
   let fh;
+  let leitura = null;
   try {
     await mkdir(path.dirname(caminhoZip), { recursive: true });
     const necessario = tamanhoAntigo + tamanhoStaging + minLivreBytes;
@@ -129,9 +139,10 @@ export async function empacotarMunicipio({
         for (const e of antigo.entradas) {
           if (e.fileName.endsWith('/') || esperado.has(e.fileName)) continue;
           esperado.set(e.fileName, e.uncompressedSize);
-          const leitura = await abrir(e);
+          leitura = await abrir(e);
           zip.addReadStream(leitura, e.fileName, { compress: false, size: e.uncompressedSize, mtime: e.getLastModDate() });
           await aguardar(leitura);
+          leitura = null;
         }
       }
       for (const nome of novos) zip.addFile(path.join(pastaStaging, nome), nome, { compress: false });
@@ -140,6 +151,7 @@ export async function empacotarMunicipio({
       await fh.sync();
       saida.destroy(); // com autoClose false, libera o stream para o fh.close() não ficar esperando
     } catch (err) {
+      leitura?.destroy();
       saida.destroy();
       zip.outputStream.destroy();
       throw err;
@@ -152,7 +164,7 @@ export async function empacotarMunicipio({
     await sincronizarPasta(path.dirname(caminhoZip));
   } catch (err) {
     await fh?.close().catch(() => {});
-    await rm(temporario, { force: true });
+    await rm(temporario, { force: true }).catch(() => {});
     throw err;
   } finally {
     antigo?.zip.close();

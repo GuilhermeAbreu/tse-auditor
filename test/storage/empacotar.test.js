@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, readdir, mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ZipCorrompidoError, empacotarMunicipio } from '../../src/storage/empacotar.js';
+import { ZipCorrompidoError, ehErroDeFormatoZip, empacotarMunicipio } from '../../src/storage/empacotar.js';
 import { lerZip } from '../helpers/zip.js';
 
 async function preparar(arquivos) {
@@ -78,4 +78,10 @@ test('recusa empacotar sem espaço livre e não deixa .part', async () => {
   );
   await access(path.join(pastaStaging, 'a'));
   await assert.rejects(access(`${caminhoZip}.part`));
+});
+
+test('ehErroDeFormatoZip separa erro de formato de erro de sistema', () => {
+  assert.ok(ehErroDeFormatoZip(new Error('end of central directory record signature not found')));
+  assert.ok(!ehErroDeFormatoZip(Object.assign(new Error('x'), { code: 'EIO' })));
+  assert.ok(!ehErroDeFormatoZip(Object.assign(new Error('x'), { code: 'EMFILE' })));
 });
