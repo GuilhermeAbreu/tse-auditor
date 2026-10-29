@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSE Auditor: coleta</title>
+  <link rel="stylesheet" href="/estilo.css">
+</head>
+<body>
+  <header>
+    <h1>TSE Auditor</h1>
+    <p id="situacao">conectando…</p>
+  </header>
+
+  <section class="cartoes">
+    <div class="cartao"><span>Velocidade</span><strong id="velocidade">—</strong></div>
+    <div class="cartao"><span>Baixado</span><strong id="baixado">—</strong></div>
+    <div class="cartao"><span>Projeção total</span><strong id="projecao">—</strong></div>
+    <div class="cartao"><span>Livre no HD</span><strong id="livre">—</strong></div>
+    <div class="cartao"><span>Seções</span><strong id="secoes">—</strong></div>
+  </section>
+
+  <table>
+    <thead>
+      <tr><th>UF</th><th>Status</th><th>Seções</th><th>Progresso</th><th>Erros</th><th>Sem dados</th><th>Baixado</th><th></th></tr>
+    </thead>
+    <tbody id="ufs"></tbody>
+  </table>
+
+  <h2>Seções com erro</h2>
+  <ul id="erros"></ul>
+
+  <h2>Eventos</h2>
+  <ul id="eventos"></ul>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
