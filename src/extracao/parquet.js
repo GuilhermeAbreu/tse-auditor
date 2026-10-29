@@ -13,12 +13,13 @@ const APPEND = {
 const aspas = (s) => `'${s.replaceAll("'", "''")}'`;
 
 export class GravadorParquet {
-  static async abrir(arquivoBanco) {
+  static async abrir(arquivoBanco, { memoriaLimite = '2GB' } = {}) {
     await rm(arquivoBanco, { force: true });
     await rm(`${arquivoBanco}.wal`, { force: true });
     const g = new GravadorParquet();
     g.arquivoBanco = arquivoBanco;
-    g.instancia = await DuckDBInstance.create(arquivoBanco);
+    // memória limitada: o que passar vai para o arquivo temporário do próprio DuckDB
+    g.instancia = await DuckDBInstance.create(arquivoBanco, { memory_limit: memoriaLimite, temp_directory: `${arquivoBanco}.tmp` });
     g.con = await g.instancia.connect();
     g.tabelas = new Map();
     return g;
@@ -43,6 +44,11 @@ export class GravadorParquet {
     t.linhas++;
   }
 
+  // Descarrega os appenders no banco em disco (chamado a cada município para não acumular em memória).
+  descarregar() {
+    for (const t of this.tabelas.values()) t.appender.flushSync();
+  }
+
   // Exporta cada tabela para <pasta>/<nome>.parquet; colunas TIMESTAMP são convertidas no COPY.
   async exportar(pasta) {
     const contagem = {};
@@ -63,5 +69,6 @@ export class GravadorParquet {
     this.instancia.closeSync();
     await rm(this.arquivoBanco, { force: true });
     await rm(`${this.arquivoBanco}.wal`, { force: true });
+    await rm(`${this.arquivoBanco}.tmp`, { recursive: true, force: true });
   }
 }

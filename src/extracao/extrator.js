@@ -62,24 +62,23 @@ export function conferir(bu, log, rdv) {
   return p;
 }
 
-async function lerZip(caminho) {
-  const zip = await deBuffer(await readFile(caminho), { lazyEntries: true });
+// Abre o zip do município e indexa as entradas sem lê-las: cada arquivo é lido só quando a seção
+// precisa dele (o zip de uma capital passa de GB; ler tudo de uma vez estoura a memória).
+async function abrirZip(caminho) {
+  const zip = await promisify(yauzl.open)(caminho, { lazyEntries: true, autoClose: false });
   const abrir = promisify(zip.openReadStream.bind(zip));
-  const arquivos = new Map();
+  const entradas = new Map();
   await new Promise((ok, falha) => {
-    zip.on('entry', async (e) => {
-      try {
-        if (!e.fileName.endsWith('/')) arquivos.set(e.fileName, await lerStream(await abrir(e)));
-        zip.readEntry();
-      } catch (err) {
-        falha(err);
-      }
+    zip.on('entry', (e) => {
+      if (!e.fileName.endsWith('/')) entradas.set(e.fileName, e);
+      zip.readEntry();
     });
     zip.on('end', ok);
     zip.on('error', falha);
     zip.readEntry();
   });
-  return arquivos;
+  const arquivos = new Map([...entradas].map(([nome, e]) => [nome, async () => lerStream(await abrir(e))]));
+  return { arquivos, fechar: () => zip.close() };
 }
 
 function secoesDoConfig(json) {
@@ -104,17 +103,22 @@ export async function extrairUF({ dados, uf, pleitos, aoProgresso = () => {} }) 
       const pastaPleito = path.join(pastaRaw, String(pleito));
       const cfg = JSON.parse(await readFile(path.join(pastaPleito, `${uf.toLowerCase()}-p${String(pleito).padStart(6, '0')}-cs.json`), 'latin1'));
       for (const { mun, secoes } of secoesDoConfig(cfg)) {
-        let arquivos = new Map();
+        let zip = { arquivos: new Map(), fechar() {} };
         let erroZip = null;
         try {
-          arquivos = await lerZip(path.join(pastaPleito, `${mun}.zip`));
+          zip = await abrirZip(path.join(pastaPleito, `${mun}.zip`));
         } catch (err) {
           erroZip = err.code === 'ENOENT' ? 'zip do município ausente' : `zip ilegível: ${err.message}`;
         }
-        for (const s of secoes) {
-          const loc = { pleito: Number(pleito), uf: UF, mun, zona: s.zona, secao: s.secao };
-          await extrairSecao({ g, loc, s, arquivos, erroZip, stats });
+        try {
+          for (const s of secoes) {
+            const loc = { pleito: Number(pleito), uf: UF, mun, zona: s.zona, secao: s.secao };
+            await extrairSecao({ g, loc, s, arquivos: zip.arquivos, erroZip, stats });
+          }
+        } finally {
+          zip.fechar();
         }
+        g.descarregar(); // grava o município no banco em disco antes do próximo
         aoProgresso({ pleito, mun, ...stats });
       }
     }
@@ -143,7 +147,7 @@ async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }) {
     if (erroZip) throw new Error(erroZip);
     const auxNome = [...arquivos.keys()].find((k) => k.startsWith(pre) && k.endsWith('.json') && k.split('/').length === 3);
     if (!auxNome) throw new Error('aux.json da seção ausente');
-    aux = JSON.parse(arquivos.get(auxNome).toString('latin1'));
+    aux = JSON.parse((await arquivos.get(auxNome)()).toString('latin1'));
   } catch (err) {
     falhar('aux', err.message);
     stats.semDados++;
@@ -154,12 +158,19 @@ async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }) {
   linha.conjuntos = hashes.length;
   linha.substituida = hashes.length > 1;
   const escolhido = hashes.findLast((h) => /totaliz/i.test(h.st ?? '')) ?? hashes.at(-1);
-  const arq = (tp) => {
+  const arq = async (tp) => {
     const nm = escolhido?.arq?.find((a) => a.tp === tp)?.nm;
-    return nm ? arquivos.get(`${pre}${escolhido.hash}/${nm}`) : undefined;
+    const ler = nm ? arquivos.get(`${pre}${escolhido.hash}/${nm}`) : undefined;
+    return ler ? ler() : undefined;
   };
-  const tentar = (tp, fn) => {
-    const buf = arq(tp);
+  const tentar = async (tp, fn) => {
+    let buf;
+    try {
+      buf = await arq(tp);
+    } catch (err) {
+      falhar(tp, err.message);
+      return null;
+    }
     if (!buf) {
       falhar(tp, 'arquivo ausente');
       return null;
@@ -172,11 +183,17 @@ async function extrairSecao({ g, loc, s, arquivos, erroZip, stats }) {
     }
   };
 
-  const bu = tentar('bu', decodificarBU);
-  const rdv = tentar('rdv', decodificarRDV);
+  const bu = await tentar('bu', decodificarBU);
+  const rdv = await tentar('rdv', decodificarRDV);
   let log = null;
-  const bufLog = arq('log');
-  if (!bufLog) falhar('log', 'arquivo ausente');
+  let bufLog;
+  let erroLog = 'arquivo ausente';
+  try {
+    bufLog = await arq('log');
+  } catch (err) {
+    erroLog = err.message;
+  }
+  if (!bufLog) falhar('log', erroLog);
   else {
     try {
       const { eventos, linhasInvalidas } = parsearLog(await lerLogJez(bufLog));
