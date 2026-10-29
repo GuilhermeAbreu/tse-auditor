@@ -99,8 +99,8 @@ async function painel(controle, opcoes) {
     await controle.fechar();
     throw err.code === 'EADDRINUSE' ? new Error(`porta ${porta} em uso; use --porta`) : err;
   }
-  console.log(`painel em http://localhost:${servidor.address().port}`);
   if (!controle.configuracao()) console.log('sem configuração: escolha pleitos e UFs no painel');
+  console.log(`painel em http://localhost:${servidor.address().port}`);
   tratarCtrlC(controle, async () => {
     await controle.fechar();
     process.exit(0);
