@@ -1,12 +1,30 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { criarPainel } from '../../src/painel/server.js';
+import { ControleColeta } from '../../src/coleta/controle.js';
+import { HttpClient } from '../../src/net/http.js';
+import { buscarEleicoes } from '../../src/tse/eleicoes.js';
+import { iniciarFakeTse } from '../helpers/fakeTse.js';
 
 const H = { 'x-tse-auditor': '1' };
+const HJ = { ...H, 'content-type': 'application/json' };
+const COLETOR_NULO = { pausar() {}, retomar() {}, executar() {}, parar() {} };
 
-async function subir(t, { obterEstado, coletor = { pausar() {}, retomar() {}, executar() {}, parar() {} } }) {
-  const servidor = criarPainel({ obterEstado, coletor, intervaloMs: 20 });
+// Controle falso: só o que o servidor usa.
+const falso = ({ obterEstado, coletor = COLETOR_NULO }) => ({
+  obterEstado, coletor, configuracao: () => null, disponiveis: () => ({ pleitos: [], ufs: [] }),
+});
+
+async function subir(t, opcoes) {
+  return subirControle(t, opcoes.controle ?? falso(opcoes));
+}
+
+async function subirControle(t, controle) {
+  const servidor = criarPainel({ controle, intervaloMs: 20 });
   await new Promise((r) => servidor.listen(0, '127.0.0.1', r));
   t.after(() => new Promise((r) => { servidor.closeAllConnections(); servidor.close(r); }));
   return `http://127.0.0.1:${servidor.address().port}`;
@@ -73,4 +91,63 @@ test('recusa Origin estranho, POST sem cabeçalho e Host errado', async (t) => {
     req.end();
   });
   assert.equal(status, 403);
+});
+
+async function controleReal(t) {
+  const fake = await iniciarFakeTse();
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-painel-'));
+  const criarHttp = (concorrencia) => new HttpClient({ concorrencia, esperaBaseMs: 1, tentativas: 2 });
+  const eleicoes = await buscarEleicoes(criarHttp(1), { base: fake.base, ambiente: 'oficial' });
+  const controle = new ControleColeta({
+    eleicoes, hd: '/nao/existe', base: fake.base, ambiente: 'oficial', minLivreBytes: 1,
+    dadosFixo: path.join(dir, 'dados'), arquivoConfig: path.join(dir, 'config.json'), criarHttp, bytesLivres: async () => 10 ** 12,
+  });
+  t.after(async () => {
+    await controle.fechar();
+    await fake.fechar();
+  });
+  return controle;
+}
+
+test('configuração: GET mostra atual e disponíveis; POST aplica ou recusa', async (t) => {
+  const controle = await controleReal(t);
+  const base = await subirControle(t, controle);
+  const post = (corpo, headers = HJ) => fetch(`${base}/api/config`, { method: 'POST', headers, body: typeof corpo === 'string' ? corpo : JSON.stringify(corpo) });
+
+  let r = await fetch(`${base}/api/config`);
+  assert.equal(r.status, 200);
+  let cfg = await r.json();
+  assert.equal(cfg.atual, null);
+  assert.ok(cfg.disponiveis.pleitos.some((p) => p.cd === '3220'));
+  assert.equal(cfg.disponiveis.ufs.length, 28);
+
+  assert.equal((await fetch(`${base}/api/uf/ac/pausar`, { method: 'POST', headers: H })).status, 409, 'sem configuração');
+  assert.deepEqual(await (await fetch(`${base}/api/coleta/iniciar`, { method: 'POST', headers: H })).json(), { erro: 'sem configuração' });
+  assert.equal((await fetch(`${base}/api/estado`)).status, 200);
+
+  assert.equal((await post({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 2 }, { 'content-type': 'application/json' })).status, 403, 'sem cabeçalho');
+  assert.equal((await post({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 2 }, H)).status, 415, 'sem JSON');
+  assert.equal((await post('{')).status, 400);
+  assert.equal((await post('x'.repeat(70 * 1024))).status, 413);
+  r = await post({ pleitos: ['3220', '452'], ufs: ['ac'], concorrencia: 2 });
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).erro, /mesmo ciclo/);
+  assert.equal((await post({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 99 })).status, 400);
+  assert.equal(controle.configuracao(), null);
+
+  r = await post({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 2, iniciar: false });
+  assert.equal(r.status, 200);
+  const { ok, atual } = await r.json();
+  assert.equal(ok, true);
+  assert.deepEqual([atual.pleitos, atual.ufs, atual.concorrencia, atual.ciclo], [['3220'], ['ac'], 2, 'ele2026']);
+  cfg = await (await fetch(`${base}/api/config`)).json();
+  assert.deepEqual(cfg.atual, atual);
+  assert.equal(controle.coletor.estado.rodando, false);
+  assert.deepEqual((await (await fetch(`${base}/api/estado`)).json()).configuracao, atual);
+  assert.equal((await fetch(`${base}/api/uf/ac/pausar`, { method: 'POST', headers: H })).status, 200);
+
+  r = await post({ pleitos: ['3220'], ufs: ['ac'], concorrencia: 2, iniciar: true });
+  assert.equal(r.status, 200);
+  assert.equal(controle.coletor.estado.rodando, true);
+  await controle.coletor.aguardar();
 });
