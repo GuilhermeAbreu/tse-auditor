@@ -98,3 +98,7 @@ td.desce { color: var(--erro); }
 .tempos h5 { margin: 6px 0 2px; }
 #an-modal pre { white-space: pre-wrap; font-size: 12px; }
 #an-ranking tbody tr { cursor: pointer; }
+
+.grupo-erro summary { cursor: pointer; margin: .3rem 0; }
+.grupo-erro .selo { display: inline-block; min-width: 2.2em; padding: 0 .5em; border-radius: 1em; background: #b3261e; color: #fff; text-align: center; font-size: .85em; }
+.grupo-erro ul { margin: .2rem 0 .6rem 2rem; }

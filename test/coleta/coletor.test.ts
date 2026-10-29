@@ -427,3 +427,26 @@ test('arquivo ok ausente do staging e do zip é rebaixado', async (t) => {
   const zip = await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'));
   assert.deepEqual(zip.get(`0004/0077/${FX.hash3220}/${bu}`)!.dados, original);
 });
+
+test('imgbu listado mas 404 fica indisponivel e a seção completa', async (t) => {
+  const nomeImg = nomeArquivo('3220', 'imgbu.dat');
+  const comImgbu = (http: ClienteHttp): ClienteHttp => ({
+    async get(url: string) {
+      const r = await http.get(url);
+      if (!url.endsWith('-aux.json') || r.status !== 200) return r;
+      const j = JSON.parse(r.body.toString('utf8'));
+      j.hashes[0].arq.push({ nm: nomeImg, tp: 'imgbu' });
+      return { ...r, body: Buffer.from(JSON.stringify(j)), etag: undefined };
+    },
+  } as ClienteHttp);
+  const { manifest, coletor } = await montar(t, { envolverHttp: comImgbu });
+  await coletor.planejar();
+  await coletor.processarSecao(S77);
+  const img = manifest.arquivosDaSecao(S77).find((a) => a.tipo === 'imgbu');
+  assert.equal(img!.status, 'indisponivel');
+  assert.equal(img!.erro, 'não publicado pelo TSE (HTTP 404)');
+  const secao = manifest.secao(S77)!;
+  assert.equal(secao.status, 'completa');
+  assert.equal(secao.erro, null);
+  assert.deepEqual(manifest.indisponiveisPorUf(), [{ uf: 'ac', n: 1 }]);
+});

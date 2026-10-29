@@ -223,10 +223,11 @@ export class ControleColeta {
         geradoEm: new Date().toISOString(),
         configuracao: null,
         coleta: { rodando: false, ufAtual: null, municipioAtual: null, motivoParada: null, velocidadeBps: 0 },
-        totais: { secoes: 0, concluidas: 0, erros: 0, semArquivos: 0, bytes: 0 },
+        totais: { secoes: 0, concluidas: 0, erros: 0, semArquivos: 0, indisponiveis: 0, bytes: 0 },
         disco: { livres: null, projecaoBytes: null, projecaoPreliminar: true },
         ufs: [],
         errosSecoes: [],
+        gruposErros: [],
         eventos: [],
         manifestErro: null,
       };

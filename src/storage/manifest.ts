@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS eventos (
 );
 `;
 
+// Tipos de arquivo que o TSE lista no índice mas às vezes não publica (404 não invalida a seção).
+export const TIPOS_OPCIONAIS = new Set(['imgbu']);
+const MSG_INDISPONIVEL = 'não publicado pelo TSE (HTTP 404)';
+
 const ONDE_SECAO = 'pleito = @pleito AND uf = @uf AND mun = @mun AND zona = @zona AND secao = @secao';
 const chave = (s: SecaoChave): SecaoChave => ({ pleito: s.pleito, uf: s.uf, mun: s.mun, zona: s.zona, secao: s.secao });
 const agora = () => new Date().toISOString();
@@ -99,6 +103,7 @@ export class Manifest {
     this.db.pragma('journal_mode = TRUNCATE');
     this.db.pragma('synchronous = NORMAL');
     this.db.exec(ESQUEMA);
+    this.#corrigirIndisponiveis();
     const p = (sql: string) => this.db.prepare(sql);
     this.#st = {
       inserirUf: p('INSERT OR IGNORE INTO ufs (uf, ordem) VALUES (?, ?)'),
@@ -135,9 +140,28 @@ export class Manifest {
                         WHERE pleito = ? AND uf = ? AND mun = ? AND status != 'agregada'`),
       reabrirArquivos: p("UPDATE arquivos SET status = 'pendente' WHERE pleito = ? AND uf = ? AND mun = ?"),
       reabrirMunicipio: p('UPDATE municipios SET empacotado_em = NULL, zip_bytes = NULL WHERE pleito = ? AND uf = ? AND mun = ?'),
+      indisponiveisPorUf: p("SELECT uf, COUNT(*) AS n FROM arquivos WHERE status = 'indisponivel' GROUP BY uf ORDER BY uf"),
       errosRecentes: p(`SELECT pleito, uf, mun, zona, secao, erro, atualizado_em FROM secoes
                         WHERE status = 'erro' ORDER BY atualizado_em DESC LIMIT ?`),
     };
+  }
+
+  // Correção única e idempotente de manifests antigos: seções em 'erro' cujos únicos arquivos
+  // não-ok são de tipo opcional com HTTP 404 passam a 'completa'; esses arquivos, a 'indisponivel'.
+  #corrigirIndisponiveis(): void {
+    const opc = [...TIPOS_OPCIONAIS].map((t) => `'${t}'`).join(', ');
+    const ehOpc404 = `(a.tipo IN (${opc}) AND a.status = 'erro' AND a.erro LIKE '%HTTP 404%')`;
+    const mesma = 'a.pleito = secoes.pleito AND a.uf = secoes.uf AND a.mun = secoes.mun AND a.zona = secoes.zona AND a.secao = secoes.secao';
+    this.db.transaction(() => {
+      this.db.exec(`UPDATE secoes SET status = 'completa', erro = NULL,
+          bytes = COALESCE((SELECT SUM(a.bytes) FROM arquivos a WHERE ${mesma} AND a.status = 'ok'), 0)
+        WHERE status = 'erro'
+          AND EXISTS (SELECT 1 FROM arquivos a WHERE ${mesma} AND ${ehOpc404})
+          AND NOT EXISTS (SELECT 1 FROM arquivos a WHERE ${mesma} AND a.status NOT IN ('ok', 'indisponivel') AND NOT ${ehOpc404})`);
+      this.db.exec(`UPDATE arquivos AS a SET status = 'indisponivel', erro = '${MSG_INDISPONIVEL}'
+        WHERE ${ehOpc404}
+          AND EXISTS (SELECT 1 FROM secoes WHERE ${mesma} AND secoes.status = 'completa')`);
+    })();
   }
 
   fechar() {
@@ -333,6 +357,11 @@ export class Manifest {
     const linhas = (this.#st.resumoPorUf!.all() as (Omit<ResumoLinha, 'bytes'> & { bytes: number | null })[]).map((r) => ({ ...r, bytes: r.bytes ?? 0 }));
     this.#resumo = { ts: Date.now(), linhas };
     return linhas;
+  }
+
+  indisponiveisPorUf(): { uf: string; n: number }[] {
+    this.#verificarErro();
+    return this.#st.indisponiveisPorUf!.all() as { uf: string; n: number }[];
   }
 
   errosRecentes(limite: number): ErroSecao[] {

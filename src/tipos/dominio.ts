@@ -140,6 +140,7 @@ export interface UfResumo {
   concluidas: number;
   erros: number;
   semArquivos: number;
+  indisponiveis: number;
   agregadas: number;
   bytes: number;
 }
@@ -149,12 +150,19 @@ export interface Totais {
   concluidas: number;
   erros: number;
   semArquivos: number;
+  indisponiveis: number;
   bytes: number;
 }
 
 export interface ErroSecao extends SecaoChave {
   erro: string | null;
   atualizado_em: string | null;
+}
+
+export interface GrupoErro {
+  causa: string;
+  n: number;
+  exemplos: ErroSecao[];
 }
 
 export interface Evento {
@@ -173,6 +181,7 @@ export interface EstadoPainel {
   disco: { livres: number | null; projecaoBytes: number | null; projecaoPreliminar: boolean };
   ufs: (UfResumo & { status: StatusUf })[];
   errosSecoes: ErroSecao[];
+  gruposErros: GrupoErro[];
   eventos: Evento[];
   manifestErro: string | null;
 }

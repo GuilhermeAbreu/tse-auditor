@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { montarEstado, statusDaUf } from '../../src/coleta/estado.ts';
+import { agruparErros, montarEstado, statusDaUf } from '../../src/coleta/estado.ts';
 import { Manifest } from '../../src/storage/manifest.ts';
 import type { EstadoColeta, UfResumo } from '../../src/tipos/dominio.ts';
 
@@ -34,10 +34,10 @@ test('agrega seções por UF, calcula projeção e status', async (t) => {
   const e = await montarEstado({ manifest, coletor, pastaDados: dir, bytesLivres: async () => 999 });
 
   assert.deepEqual(e.ufs.find((u) => u.uf === 'ac'), {
-    uf: 'ac', pausada: false, total: 3, concluidas: 2, erros: 1, semArquivos: 1, agregadas: 1, bytes: 1000, status: 'baixado_com_erros',
+    uf: 'ac', pausada: false, total: 3, concluidas: 2, erros: 1, semArquivos: 1, indisponiveis: 0, agregadas: 1, bytes: 1000, status: 'baixado_com_erros',
   });
   assert.equal(e.ufs.find((u) => u.uf === 'al')!.status, 'baixando');
-  assert.deepEqual(e.totais, { secoes: 4, concluidas: 2, erros: 1, semArquivos: 1, bytes: 1000 });
+  assert.deepEqual(e.totais, { secoes: 4, concluidas: 2, erros: 1, semArquivos: 1, indisponiveis: 0, bytes: 1000 });
   assert.deepEqual(e.disco, { livres: 999, projecaoBytes: 2000, projecaoPreliminar: true });
   assert.equal(e.coleta.velocidadeBps, 500);
   assert.equal(e.coleta.ufAtual, 'al');
@@ -75,7 +75,7 @@ test('projeção deixa de ser preliminar com amostra grande; erros fora do denom
       { uf: 'ac', status: 'erro', n: 1000, bytes: 0 },
       { uf: 'ac', status: 'pendente', n: 7000, bytes: 0 },
     ],
-    errosRecentes: () => [], eventos: () => [], erro: null,
+    errosRecentes: () => [], indisponiveisPorUf: () => [], eventos: () => [], erro: null,
   };
   const e = await montarEstado({ manifest: manifest as unknown as Dubles['manifest'], coletor: coletorFake, pastaDados: '/x', bytesLivres: async () => 1 });
   assert.deepEqual(e.disco, { livres: 1, projecaoBytes: 20000, projecaoPreliminar: false });
@@ -89,4 +89,16 @@ test('manifest que falha gera estado degradado em vez de lançar', async () => {
   assert.deepEqual(e.ufs, []);
   assert.deepEqual(e.disco, { livres: 7, projecaoBytes: null, projecaoPreliminar: true });
   assert.equal(e.totais.secoes, 0);
+});
+
+test('agruparErros normaliza a causa e limita os exemplos', () => {
+  const e = (erro: string, n = '0001') => ({ pleito: '3220', uf: 'ac', mun: '1', zona: '1', secao: n, erro, atualizado_em: null });
+  const lista = [
+    ...Array.from({ length: 25 }, (_, i) => e(`o03221ba0106600040077-imgbu.dat: HTTP 404`, String(i))),
+    e('índice: HTTP 404'), e('o03221ac0106600040077-bu.dat: md5 não confere com o ETag'),
+  ];
+  const g = agruparErros(lista);
+  assert.deepEqual(g.map((x) => [x.causa, x.n, x.exemplos.length]), [
+    ['imgbu: HTTP 404', 25, 20], ['índice: HTTP 404', 1, 1], ['bu: md5 não confere com o ETag', 1, 1],
+  ]);
 });

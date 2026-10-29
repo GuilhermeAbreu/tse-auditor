@@ -191,3 +191,35 @@ test('reabrirMunicipio devolve seções e arquivos à fila e limpa o empacotamen
   assert.equal(mun!.empacotado_em, null);
   assert.equal(mun!.zip_bytes, null);
 });
+
+test('abrir corrige seções antigas em erro só por imgbu com HTTP 404 (idempotente)', async (t) => {
+  const { m, caminho } = await novoManifest(t);
+  m.registrarConfig('3220', 'ac', [{ mun: '01066', nome: 'P', secoes: [
+    { zona: '0004', secao: '0077', principal: null }, { zona: '0004', secao: '0078', principal: null },
+  ] }]);
+  const urlDe = (h: string, n: string) => `http://x/${h}/${n}`;
+  const conj = [{ hash: 'h1', status: null, data: null, hora: null, arquivos: [{ nome: 'a-bu.dat', tipo: 'bu' }, { nome: 'a-imgbu.dat', tipo: 'imgbu' }] }];
+  const s78 = { ...S77, secao: '0078' };
+  for (const s of [S77, s78]) m.registrarIndice(s, conj, urlDe);
+  m.marcarArquivo(S77, 'h1', 'a-bu.dat', { status: 'ok', bytes: 10 });
+  m.marcarArquivo(S77, 'h1', 'a-imgbu.dat', { status: 'erro', erro: 'HTTP 404' });
+  m.finalizarSecao(S77, { status: 'erro', bytes: 10, erro: 'a-imgbu.dat: HTTP 404' });
+  m.marcarArquivo(s78, 'h1', 'a-bu.dat', { status: 'erro', erro: 'HTTP 404' });
+  m.marcarArquivo(s78, 'h1', 'a-imgbu.dat', { status: 'erro', erro: 'HTTP 404' });
+  m.finalizarSecao(s78, { status: 'erro', erro: 'a-bu.dat: HTTP 404' });
+  m.fechar();
+
+  for (let i = 0; i < 2; i++) {
+    const m2 = new Manifest(caminho);
+    t.after(() => m2.fechar());
+    assert.deepEqual(
+      [m2.secao(S77)!.status, m2.secao(S77)!.bytes, m2.secao(S77)!.erro],
+      ['completa', 10, null],
+    );
+    assert.equal(m2.arquivo(S77, 'h1', 'a-imgbu.dat')!.status, 'indisponivel');
+    assert.equal(m2.secao(s78)!.status, 'erro', 'falta de bu continua erro');
+    assert.equal(m2.arquivo(s78, 'h1', 'a-imgbu.dat')!.status, 'erro');
+    assert.deepEqual(m2.indisponiveisPorUf(), [{ uf: 'ac', n: 1 }]);
+    m2.fechar();
+  }
+});

@@ -8,6 +8,7 @@ import { nomeConfigSecoes, nomeIndiceSecao } from '../tse/urls.ts';
 import { md5, md5DoEtag, sha512Hex, vscConfereComDiretorio, vscContemSha512 } from '../tse/integridade.ts';
 import { empacotarMunicipio, listarNomesZip, ZipCorrompidoError } from '../storage/empacotar.ts';
 import { bytesLivres as bytesLivresDoDisco, ehErroDeVolume, garantirVolume } from '../storage/disco.ts';
+import { TIPOS_OPCIONAIS } from '../storage/manifest.ts';
 import type { ArquivoLinha, Manifest } from '../storage/manifest.ts';
 import type { Urls } from '../tse/urls.ts';
 import type { ClienteHttp, EstadoColeta, IndiceSecao, RespostaHttp, SecaoChave } from '../tipos/dominio.ts';
@@ -33,6 +34,7 @@ export interface OpcoesColetor {
   tentativasVerificacao?: number;
 }
 
+export { TIPOS_OPCIONAIS };
 const TIPOS_NO_VSC = new Set(['bu', 'rdv', 'log']);
 const JANELA_VELOCIDADE_MS = 60_000;
 const GB = 1024 ** 3;
@@ -205,7 +207,7 @@ export class Coletor extends EventEmitter {
 
     const arquivos = this.manifest.arquivosDaSecao(s);
     const bytes = arquivos.reduce((total, a) => total + (a.bytes ?? 0), 0);
-    const falha = arquivos.find((a) => a.status !== 'ok');
+    const falha = arquivos.find((a) => a.status !== 'ok' && a.status !== 'indisponivel');
     // O índice só vai para o staging quando há algo novo para o zip (evita reempacotar à toa).
     if (!falha || ctx.novos > 0) await gravarIndice();
     this.manifest.finalizarSecao(s, falha
@@ -217,7 +219,7 @@ export class Coletor extends EventEmitter {
   // O .vsc é baixado de novo sempre que o conjunto tem pendências, porque pode já estar só no zip.
   async #baixarConjunto(s: SecaoChave, hash: string, staging: string, ctx: Ctx): Promise<void> {
     const registros = this.manifest.arquivosDaSecao(s).filter((a) => a.hash === hash);
-    if (registros.every((a) => a.status === 'ok')) return;
+    if (registros.every((a) => a.status === 'ok' || a.status === 'indisponivel')) return;
     const pasta = path.join(staging, s.zona, s.secao, hash);
 
     const regVsc = registros.find((a) => a.nome.endsWith('.vsc'));
@@ -257,6 +259,10 @@ export class Coletor extends EventEmitter {
         if (err instanceof SemConexaoError) throw err;
         erro = mensagem(err);
         break;
+      }
+      if (r.status === 404 && TIPOS_OPCIONAIS.has(reg.tipo ?? '')) {
+        this.manifest.marcarArquivo(s, reg.hash, reg.nome, { status: 'indisponivel', erro: 'não publicado pelo TSE (HTTP 404)' });
+        return null;
       }
       if (r.status !== 200) {
         erro = `HTTP ${r.status}`;

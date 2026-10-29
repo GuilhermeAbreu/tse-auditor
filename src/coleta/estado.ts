@@ -1,6 +1,6 @@
 // Status de coleta da UF. Os status das etapas seguintes (verificando, extraído, analisado)
 // entram com os planos de verificação e análise.
-import type { EstadoColeta, EstadoPainel, StatusUf, UfResumo } from '../tipos/dominio.ts';
+import type { ErroSecao, EstadoColeta, EstadoPainel, GrupoErro, StatusUf, UfResumo } from '../tipos/dominio.ts';
 import type { Manifest } from '../storage/manifest.ts';
 import type { Coletor } from './coletor.ts';
 
@@ -13,12 +13,30 @@ export function statusDaUf(u: UfResumo, coleta: EstadoColeta): StatusUf {
   return 'aguardando';
 }
 
+// Causa normalizada de um erro de seção: tira o prefixo do nome do arquivo (deixa o tipo) e números longos.
+export function causaDoErro(erro: string | null): string {
+  const e = (erro ?? 'erro desconhecido').replace(/^[\w.]+?-([a-z0-9]+)\.[a-z0-9]+: /i, '$1: ');
+  return e.replace(/\d{4,}/g, '#');
+}
+
+export function agruparErros(erros: ErroSecao[], maxExemplos = 20): GrupoErro[] {
+  const grupos = new Map<string, GrupoErro>();
+  for (const e of erros) {
+    const causa = causaDoErro(e.erro);
+    const g = grupos.get(causa) ?? { causa, n: 0, exemplos: [] };
+    g.n++;
+    if (g.exemplos.length < maxExemplos) g.exemplos.push(e);
+    grupos.set(causa, g);
+  }
+  return [...grupos.values()].sort((a, b) => b.n - a.n);
+}
+
 // Junta o manifest e o coletor no objeto que o painel e o CLI exibem.
 // Seções agregadas não contam no total (não têm arquivos próprios); "sem arquivos" conta como
 // concluída para o progresso, mas aparece separada, nunca como "ok".
 // `ufs` (opcional) limita o estado às UFs da configuração atual; o manifest pode ter outras.
 export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres, ufs: filtro }: {
-  manifest: Pick<Manifest, 'ufs' | 'resumoPorUf' | 'errosRecentes' | 'eventos' | 'erro'>;
+  manifest: Pick<Manifest, 'ufs' | 'resumoPorUf' | 'indisponiveisPorUf' | 'errosRecentes' | 'eventos' | 'erro'>;
   coletor: Pick<Coletor, 'estado' | 'velocidadeBps'>;
   pastaDados: string;
   bytesLivres: (pasta: string) => Promise<number>;
@@ -28,6 +46,8 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
   let ufsManifest: ReturnType<Manifest['ufs']> = [];
   let resumo: ReturnType<Manifest['resumoPorUf']> = [];
   let errosSecoes: ReturnType<Manifest['errosRecentes']> = [];
+  let indisponiveis: ReturnType<Manifest['indisponiveisPorUf']> = [];
+  let todosErros: ReturnType<Manifest['errosRecentes']> = [];
   let eventos: ReturnType<Manifest['eventos']> = [];
   let manifestErro: string | null = null;
   let falha: Error | null = null;
@@ -35,6 +55,8 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
     ufsManifest = manifest.ufs();
     resumo = manifest.resumoPorUf();
     errosSecoes = manifest.errosRecentes(20);
+    todosErros = manifest.errosRecentes(500);
+    indisponiveis = manifest.indisponiveisPorUf();
     eventos = manifest.eventos(20);
     manifestErro = manifest.erro?.message ?? null;
   } catch (err) {
@@ -52,10 +74,11 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
     return {
       geradoEm: new Date().toISOString(),
       coleta,
-      totais: { secoes: 0, concluidas: 0, erros: 0, semArquivos: 0, bytes: 0 },
+      totais: { secoes: 0, concluidas: 0, erros: 0, semArquivos: 0, indisponiveis: 0, bytes: 0 },
       disco: { livres, projecaoBytes: null, projecaoPreliminar: true },
       ufs: [],
       errosSecoes: [],
+      gruposErros: [],
       eventos: [],
       manifestErro: falha.message,
     };
@@ -63,8 +86,12 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
 
   if (filtro) ufsManifest = ufsManifest.filter((u) => filtro.includes(u.uf));
   const porUf = new Map<string, UfResumo>(ufsManifest.map((u) => [u.uf, {
-    uf: u.uf, pausada: u.pausada === 1, total: 0, concluidas: 0, erros: 0, semArquivos: 0, agregadas: 0, bytes: 0,
+    uf: u.uf, pausada: u.pausada === 1, total: 0, concluidas: 0, erros: 0, semArquivos: 0, indisponiveis: 0, agregadas: 0, bytes: 0,
   }]));
+  for (const { uf, n } of indisponiveis) {
+    const u = porUf.get(uf);
+    if (u) u.indisponiveis = n;
+  }
   for (const { uf, status, n, bytes } of resumo) {
     const u = porUf.get(uf);
     if (!u) continue;
@@ -82,7 +109,7 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
   const ufs = [...porUf.values()].map((u) => ({ ...u, status: statusDaUf(u, coleta) }));
   const soma = (campo: keyof Omit<UfResumo, 'uf' | 'pausada'>) => ufs.reduce((total, u) => total + u[campo], 0);
   const totais = {
-    secoes: soma('total'), concluidas: soma('concluidas'), erros: soma('erros'), semArquivos: soma('semArquivos'), bytes: soma('bytes'),
+    secoes: soma('total'), concluidas: soma('concluidas'), erros: soma('erros'), semArquivos: soma('semArquivos'), indisponiveis: soma('indisponiveis'), bytes: soma('bytes'),
   };
 
   return {
@@ -96,6 +123,7 @@ export async function montarEstado({ manifest, coletor, pastaDados, bytesLivres,
     },
     ufs,
     errosSecoes,
+    gruposErros: agruparErros(todosErros),
     eventos,
     manifestErro,
   };

@@ -12,7 +12,7 @@
 /**
  * GET /api/eventos (SSE)
  * @typedef {{ uf: string, status: string, total: number, concluidas: number, erros: number,
- *   semArquivos: number, bytes: number | null, pausada: boolean }} UfEstado
+ *   semArquivos: number, indisponiveis?: number, bytes: number | null, pausada: boolean }} UfEstado
  * @typedef {{
  *   coleta: { rodando: boolean, ufAtual?: string | null, municipioAtual?: string | null,
  *     motivoParada?: string | null, velocidadeBps: number | null },
@@ -21,6 +21,7 @@
  *   disco: { projecaoBytes: number | null, projecaoPreliminar?: boolean, livres: number | null },
  *   ufs: UfEstado[],
  *   errosSecoes: { uf: string, pleito: string, mun: string, zona: string, secao: string, erro: string }[],
+ *   gruposErros?: { causa: string, n: number, exemplos: { uf: string, pleito: string, mun: string, zona: string, secao: string }[] }[],
  *   eventos: { nivel: string, ts: string | number, uf?: string | null, msg: string }[],
  * }} Estado
  */
@@ -98,6 +99,7 @@ function linhaUf(u) {
     <td><progress max="100" value="${pct}"></progress> ${pct}%</td>
     <td>${u.erros ? `<b class="erro">${num(u.erros)}</b>` : '0'}</td>
     <td>${num(u.semArquivos)}</td>
+    <td title="arquivo listado no índice do TSE mas não publicado; não afeta a análise">${num(u.indisponiveis ?? 0)}</td>
     <td>${fmtBytes(u.bytes)}</td>
     <td><button data-uf="${esc(u.uf)}" data-acao="${acao}" title="${u.pausada ? 'retoma a coleta (todas as UFs não pausadas)' : 'pausa esta UF'}">${u.pausada ? 'Retomar' : 'Pausar'}</button></td>
   </tr>`;
@@ -132,8 +134,9 @@ function render(e) {
   $('livre').textContent = fmtBytes(e.disco.livres);
   $('secoes').textContent = `${num(e.totais.concluidas)} / ${num(e.totais.secoes)}`;
   $('ufs').innerHTML = e.ufs.map(linhaUf).join('');
-  $('erros').innerHTML = e.errosSecoes.map((s) =>
-    `<li>${esc(s.uf.toUpperCase())} ${esc(s.pleito)} mun ${esc(s.mun)} zona ${esc(s.zona)} seção ${esc(s.secao)}: ${esc(s.erro)}</li>`).join('');
+  $('erros').innerHTML = (e.gruposErros ?? []).map((g) =>
+    `<details class="grupo-erro"><summary><span class="selo">${num(g.n)}</span> ${esc(g.causa)}</summary><ul>${g.exemplos.map((s) =>
+      `<li>${esc(s.uf.toUpperCase())} ${esc(s.pleito)} mun ${esc(s.mun)} zona ${esc(s.zona)} seção ${esc(s.secao)}</li>`).join('')}</ul></details>`).join('');
   $('eventos').innerHTML = e.eventos.map((ev) =>
     `<li class="${esc(ev.nivel)}"><time>${esc(new Date(ev.ts).toLocaleString('pt-BR'))}</time> ${esc(ev.uf?.toUpperCase() ?? '')} ${esc(ev.msg)}</li>`).join('');
 }
