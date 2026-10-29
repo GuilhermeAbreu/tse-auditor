@@ -1,23 +1,21 @@
 #!/usr/bin/env node
-import { mkdir } from 'node:fs/promises';
-import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { PADRAO, pastaDados } from './config.js';
+import { PADRAO } from './config.js';
+import { configInicial, lerConfigSalva } from './configSalva.js';
 import { UFS } from './ufs.js';
 import { fmtBytes, linhaDeProgresso } from './formatar.js';
 import { HttpClient } from './net/http.js';
 import { buscarEleicoes } from './tse/eleicoes.js';
-import { criarUrls } from './tse/urls.js';
-import { Manifest } from './storage/manifest.js';
-import { bytesLivres, garantirVolume } from './storage/disco.js';
-import { Coletor } from './coleta/coletor.js';
-import { montarEstado } from './coleta/estado.js';
+import { ControleColeta } from './coleta/controle.js';
 import { criarPainel } from './painel/server.js';
 
 const AJUDA = `uso:
   tse-auditor eleicoes
   tse-auditor coletar --pleito 3220,3221 [--uf ac,al] [--dados <pasta>] [--concorrencia 4]
-  tse-auditor painel  --pleito 3220,3221 [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3000] [--sem-iniciar]`;
+  tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3000] [--sem-iniciar]
+
+O painel também configura pleitos, UFs e concorrência; a última configuração aplicada fica em
+$XDG_CONFIG_HOME/tse-auditor/config.json (ou TSE_CONFIG) e é usada quando o painel abre sem opções.`;
 
 function listarEleicoes({ pleitos }) {
   for (const p of pleitos) {
@@ -29,114 +27,91 @@ function listarEleicoes({ pleitos }) {
   }
 }
 
-async function montarColeta(opcoes, { templates, pleitos: todos }, http, concorrencia) {
-  if (!opcoes.pleito) throw new Error('informe --pleito (veja "tse-auditor eleicoes")');
-  const pleitos = opcoes.pleito.split(',').map((p) => p.trim());
-  const escolhidos = pleitos.map((cd) => {
-    const p = todos.find((x) => x.cd === cd);
-    if (!p) throw new Error(`pleito ${cd} não existe no ele-c.json`);
-    return p;
-  });
-  const ciclos = [...new Set(escolhidos.map((p) => p.ciclo))];
-  if (ciclos.length !== 1) throw new Error(`os pleitos precisam ser do mesmo ciclo: ${ciclos.join(', ')}`);
-  const [ciclo] = ciclos;
-
-  const ufs = opcoes.uf ? opcoes.uf.toLowerCase().split(',').map((u) => u.trim()) : UFS;
-  for (const uf of ufs) if (!UFS.includes(uf)) throw new Error(`UF desconhecida: ${uf}`);
-
-  if (!opcoes.dados) await garantirVolume(PADRAO.hd);
-  const dados = opcoes.dados ?? pastaDados(PADRAO.hd, ciclo);
-  await mkdir(dados, { recursive: true });
-
-  const manifest = new Manifest(path.join(dados, 'manifest.sqlite'));
-  const coletor = new Coletor({
-    manifest,
-    http,
-    urls: criarUrls({ base: PADRAO.base, ambiente: PADRAO.ambiente, templates }),
-    pastaDados: dados,
-    ciclo,
-    pleitos,
-    ufs,
-    minLivreBytes: PADRAO.minLivreBytes,
-    concorrencia,
-  });
-  const obterEstado = () => montarEstado({ manifest, coletor, pastaDados: dados, bytesLivres });
-  return { manifest, coletor, obterEstado, dados };
-}
-
-function fecharManifest(manifest) {
-  try {
-    manifest.fechar();
-  } catch (err) {
-    console.error(`erro ao fechar o manifest: ${err.message}`);
-  }
-}
+const lista = (texto) => texto.split(',').map((x) => x.trim()).filter(Boolean);
 
 // Primeiro Ctrl-C: parada ordenada. Segundo: força a saída (fecha o manifest se der).
-function tratarCtrlC(coletor, manifest, aoParar) {
+function tratarCtrlC(controle, aoParar) {
   let vezes = 0;
-  process.on('SIGINT', async () => {
+  process.on('SIGINT', () => {
     vezes++;
     if (vezes > 1) {
-      fecharManifest(manifest);
+      controle.fecharJa();
       process.exit(130);
     }
-    console.log('encerrando: aguardando o município atual; Ctrl-C de novo força a saída');
-    coletor.parar();
-    aoParar?.();
+    console.log('encerrando: aguardando as seções em andamento; Ctrl-C de novo força a saída');
+    aoParar();
   });
 }
 
-async function coletar({ manifest, coletor, obterEstado, dados }) {
-  console.log(`dados em ${dados}`);
+async function coletar(controle, opcoes) {
+  if (!opcoes.pleito) throw new Error('informe --pleito (veja "tse-auditor eleicoes")');
+  await controle.aplicar({
+    pleitos: lista(opcoes.pleito),
+    ufs: opcoes.uf ? lista(opcoes.uf) : UFS,
+    concorrencia: opcoes.concorrencia ?? PADRAO.concorrencia,
+  }, { salvar: false });
+  console.log(`dados em ${controle.configuracao().dados}`);
   let ativo = true;
   const relogio = setInterval(async () => {
     if (!ativo) return;
     try {
-      const estado = await obterEstado();
+      const estado = await controle.obterEstado();
       if (ativo) console.log(linhaDeProgresso(estado));
     } catch (err) {
       console.error(`erro ao ler o progresso: ${err.message}`);
     }
   }, 10_000);
-  tratarCtrlC(coletor, manifest);
-  await coletor.executar();
+  tratarCtrlC(controle, () => controle.coletor.parar());
+  await controle.coletor.executar();
   ativo = false;
   clearInterval(relogio);
-  const estado = await obterEstado();
+  const estado = await controle.obterEstado();
   console.log(linhaDeProgresso(estado));
   if (estado.disco.projecaoBytes != null) {
     console.log(`projeção do total: ${fmtBytes(estado.disco.projecaoBytes)}${estado.disco.projecaoPreliminar ? ' (preliminar)' : ''}`);
   }
   console.log(`fim: ${estado.coleta.motivoParada}`);
-  fecharManifest(manifest);
+  await controle.fechar();
   if (estado.coleta.motivoParada !== 'concluída') process.exitCode = 1;
 }
 
-async function painel({ manifest, coletor, obterEstado }, opcoes) {
-  const porta = Number(opcoes.porta ?? PADRAO.porta);
-  const servidor = criarPainel({ obterEstado, coletor });
+async function painel(controle, opcoes) {
+  const inicial = configInicial(opcoes, await lerConfigSalva(controle.arquivoConfig));
+  if (inicial) {
+    try {
+      await controle.aplicar(inicial.config, { iniciar: !opcoes['sem-iniciar'] });
+    } catch (err) {
+      if (inicial.origem === 'linha de comando') throw err;
+      console.error(`configuração salva não aplicada (${err.message}); escolha outra no painel`);
+    }
+  } else if (opcoes.uf !== undefined || opcoes.concorrencia !== undefined) {
+    console.error('sem --pleito nem configuração salva: escolha os pleitos no painel');
+  }
+
+  const porta = opcoes.porta ?? PADRAO.porta;
+  const servidor = criarPainel({ controle });
   try {
     await new Promise((resolve, reject) => {
       servidor.once('error', reject);
       servidor.listen(porta, '127.0.0.1', resolve);
     });
   } catch (err) {
-    fecharManifest(manifest);
+    await controle.fechar();
     throw err.code === 'EADDRINUSE' ? new Error(`porta ${porta} em uso; use --porta`) : err;
   }
-  console.log(`painel em http://localhost:${porta}`);
-  tratarCtrlC(coletor, manifest, async () => {
-    await coletor.aguardar();
-    fecharManifest(manifest);
+  console.log(`painel em http://localhost:${servidor.address().port}`);
+  if (!controle.configuracao()) console.log('sem configuração: escolha pleitos e UFs no painel');
+  tratarCtrlC(controle, async () => {
+    await controle.fechar();
     process.exit(0);
   });
-  if (!opcoes['sem-iniciar']) coletor.executar();
 }
 
-function inteiroPositivo(valor, nome) {
+function inteiro(valor, nome, minimo = 1) {
   if (valor === undefined) return undefined;
-  if (!/^\d+$/.test(valor) || Number(valor) < 1) throw new Error(`${nome} precisa ser um inteiro positivo: ${valor}`);
+  if (!/^\d+$/.test(valor) || Number(valor) < minimo) {
+    throw new Error(`${nome} precisa ser um inteiro ${minimo ? 'positivo' : 'não negativo'}: ${valor}`);
+  }
   return Number(valor);
 }
 
@@ -159,15 +134,14 @@ async function main(argv) {
     process.exitCode = 1;
     return;
   }
-  const concorrencia = inteiroPositivo(opcoes.concorrencia, '--concorrencia') ?? PADRAO.concorrencia;
-  const porta = inteiroPositivo(opcoes.porta, '--porta');
-  if (porta !== undefined) opcoes.porta = String(porta);
-  const http = new HttpClient({ concorrencia, userAgent: PADRAO.userAgent });
+  opcoes.concorrencia = inteiro(opcoes.concorrencia, '--concorrencia');
+  opcoes.porta = inteiro(opcoes.porta, '--porta', 0); // 0: porta livre qualquer
+  const http = new HttpClient({ concorrencia: PADRAO.concorrencia, userAgent: PADRAO.userAgent });
   const eleicoes = await buscarEleicoes(http, PADRAO);
   if (comando === 'eleicoes') return listarEleicoes(eleicoes);
-  const coleta = await montarColeta(opcoes, eleicoes, http, concorrencia);
-  if (comando === 'coletar') return coletar(coleta);
-  return painel(coleta, opcoes);
+  const controle = new ControleColeta({ ...PADRAO, eleicoes, dadosFixo: opcoes.dados });
+  if (comando === 'coletar') return coletar(controle, opcoes);
+  return painel(controle, opcoes);
 }
 
 main(process.argv.slice(2)).catch((err) => {
