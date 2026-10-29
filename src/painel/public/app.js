@@ -42,6 +42,8 @@ function render(e) {
   $('situacao').classList.toggle('erro', Boolean(e.manifestErro));
   $('btn-iniciar').hidden = c.rodando;
   $('btn-parar').hidden = !c.rodando;
+  $('btn-iniciar').disabled = c.rodando;
+  $('btn-parar').disabled = !c.rodando;
   $('velocidade').textContent = `${fmtBytes(c.velocidadeBps)}/s`;
   $('baixado').textContent = fmtBytes(e.totais.bytes);
   $('projecao').textContent = e.disco.projecaoBytes == null
