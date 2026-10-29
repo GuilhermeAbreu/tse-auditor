@@ -29,3 +29,29 @@ progress { width: 120px; vertical-align: middle; }
 ul { padding-left: 18px; }
 time { color: var(--suave); margin-right: 6px; }
 button { cursor: pointer; }
+details#configuracao { background: var(--cartao); border: 1px solid var(--borda); border-radius: 8px; padding: 8px 12px; margin-bottom: 20px; }
+details#configuracao > summary { cursor: pointer; font-weight: 600; }
+fieldset { border: 1px solid var(--borda); border-radius: 6px; margin: 12px 0; }
+legend { font-weight: 600; padding: 0 4px; }
+.dica { color: var(--suave); font-weight: normal; font-size: 12px; }
+.ciclo > summary { cursor: pointer; margin: 6px 0; }
+.ciclo label { display: block; padding: 2px 0; }
+.ciclo .data { font-variant-numeric: tabular-nums; margin: 0 6px; }
+.grade-ufs { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 4px; }
+.grade-ufs label { white-space: nowrap; }
+input[type=number] { width: 70px; }
+code { overflow-wrap: anywhere; }
+#cfg-msg.ok { color: var(--ok); }
+details#avancado { margin: 12px 0; }
+details#avancado > summary { cursor: pointer; font-weight: 600; }
+label.campo { display: grid; grid-template-columns: 220px 1fr; gap: 2px 12px; align-items: center; margin: 6px 0; }
+label.campo .dica { grid-column: 2; }
+label.campo input[type=text] { width: 100%; max-width: 520px; }
+label.campo input[type=number] { width: 120px; }
+.alerta { color: var(--erro); margin: 4px 0; }
+dl.leitura { display: grid; grid-template-columns: 220px 1fr; gap: 4px 12px; margin: 8px 0; }
+dl.leitura dd { margin: 0; color: var(--suave); }
+@media (max-width: 640px) {
+  label.campo, dl.leitura { grid-template-columns: 1fr; }
+  label.campo .dica { grid-column: 1; }
+}

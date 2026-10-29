@@ -14,6 +14,38 @@
       <button id="btn-parar" data-coleta="parar" hidden>Parar coleta</button></p>
   </header>
 
+  <details id="configuracao">
+    <summary>Configuração <span id="cfg-resumo" class="dica"></span></summary>
+    <form id="form-config">
+      <fieldset>
+        <legend>Pleitos</legend>
+        <p class="dica">Escolha pleitos de um mesmo ciclo (os dados de cada ciclo ficam numa pasta própria).</p>
+        <div id="cfg-pleitos">carregando…</div>
+      </fieldset>
+      <fieldset>
+        <legend>UFs</legend>
+        <p><button type="button" id="ufs-todas">Marcar todas</button> <button type="button" id="ufs-limpar">Limpar</button></p>
+        <div id="cfg-ufs" class="grade-ufs"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Concorrência</legend>
+        <label><input type="number" id="cfg-concorrencia" min="1" max="64" step="1" value="4" required>
+          <span class="dica" id="cfg-concorrencia-dica">conexões simultâneas ao TSE (padrão 4)</span></label>
+        <p id="cfg-concorrencia-alerta" class="alerta" hidden>Mais conexões ficam mais rápidas, mas pesam mais no servidor do TSE.</p>
+      </fieldset>
+      <details id="avancado">
+        <summary>Avançado</summary>
+        <div id="cfg-avancado"></div>
+        <p><button type="button" id="cfg-padroes">Restaurar padrões</button>
+          <span class="dica">preenche concorrência e opções avançadas com os padrões; pleitos e UFs ficam como estão</span></p>
+      </details>
+      <p>Pasta de dados: <code id="cfg-dados">—</code></p>
+      <p id="cfg-msg" role="status"></p>
+      <p><button type="submit" value="aplicar">Aplicar</button>
+        <button type="submit" value="iniciar">Aplicar e iniciar</button></p>
+    </form>
+  </details>
+
   <section class="cartoes">
     <div class="cartao"><span>Velocidade</span><strong id="velocidade">—</strong></div>
     <div class="cartao"><span>Baixado</span><strong id="baixado">—</strong></div>
