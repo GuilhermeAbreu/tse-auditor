@@ -329,6 +329,47 @@ async function obterJson(caminho, opcoes) {
 
 const td = (texto) => el('td', { textContent: texto ?? '—' });
 
+// Glossário dos códigos de sinais (por grupo de cor) e das explicações candidatas.
+const SINAIS = {
+  MESARIO_ACIMA_LOCAL: ['mesario', 'Mesário acima do local', 'Proporção de eleitores liberados pelo mesário bem acima das outras seções do mesmo local de votação.'],
+  MESARIO_ACIMA_ZONA: ['mesario', 'Mesário acima da zona', 'Proporção de liberação pelo mesário bem acima das seções da mesma zona.'],
+  MESARIO_SUBIU_OUTRO_TURNO: ['mesario', 'Mesário subiu entre turnos', 'A liberação pelo mesário aumentou muito em relação ao outro turno na mesma seção.'],
+  MESARIO_ULTIMA_HORA: ['mesario', 'Mesário na última hora', 'Liberações pelo mesário concentradas na última hora de votação.'],
+  ABSTENCAO_CAIU_MESARIO_SUBIU: ['mesario', 'Abstenção caiu e mesário subiu', 'Entre turnos, a abstenção caiu ao mesmo tempo em que a liberação pelo mesário subiu.'],
+  VARIACAO_ATIPICA_ZONA: ['turnos', 'Variação atípica entre turnos', 'Votos de um candidato a presidente mudaram entre os turnos muito mais do que nas seções da zona.'],
+  GANHO_ACIMA_DISPONIVEL: ['turnos', 'Ganho acima do disponível', 'Um candidato ganhou mais votos no 2º turno do que havia votos disponíveis na seção.'],
+  VOTO_APOS_PAUSA_17H: ['horarios', 'Voto após pausa no encerramento', 'Voto registrado depois do encerramento após 30 min ou mais sem votos (não parece fila).'],
+  VOTO_ANTES_ABERTURA: ['horarios', 'Voto antes da abertura', 'Voto computado antes do horário de abertura da votação.'],
+  TESTE_CARGA_NO_DIA: ['horarios', 'Teste/carga no dia', 'Eventos de teste ou carga da urna misturados à votação no dia da eleição.'],
+  COMPARECIMENTO_ACIMA_APTOS: ['limites', 'Comparecimento acima de aptos', 'Mais eleitores votaram do que o número de aptos da seção.'],
+  VOTOS_ACIMA_COMPARECIMENTO: ['limites', 'Votos acima do comparecimento', 'Total de votos de um cargo maior que o comparecimento.'],
+};
+const EXPLICACOES = {
+  fila_17h: ['Fila no encerramento', 'Votos contínuos até o encerramento, indicando fila real.'],
+  leitor_biometrico_defeito: ['Leitor biométrico com defeito', 'Muitas tentativas de digital falhando desde cedo; o mesário precisa liberar mais.'],
+  eleitores_sem_biometria: ['Eleitores sem biometria', 'Muitos eleitores habilitados pelo ano de nascimento (sem biometria cadastrada).'],
+  secao_agregada: ['Seção agregada', 'A seção recebeu eleitores de outra seção, o que muda o perfil entre turnos.'],
+  contingencia: ['Urna de reserva', 'A urna foi substituída no dia (contingência).'],
+  desvio_relogio: ['Desvio no relógio', 'O relógio da urna parece adiantado ou atrasado.'],
+};
+const GRUPOS = { mesario: 'Liberação pelo mesário', turnos: '1º × 2º turno', horarios: 'Horários', limites: 'Limites' };
+const badgeSinal = (c) => el('span', { className: `badge g-${SINAIS[c]?.[0] ?? 'outro'}`, textContent: SINAIS[c]?.[1] ?? c, title: SINAIS[c]?.[2] ?? c });
+const badgeExp = (c) => el('span', { className: 'badge explicacao', textContent: EXPLICACOES[c]?.[0] ?? c, title: EXPLICACOES[c]?.[1] ?? c });
+const listaExp = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/[,;]\s*/)).filter(Boolean);
+const tdBadges = (codigos, f) => el('td', {}, ...(codigos.length ? codigos.map(f) : [document.createTextNode('—')]));
+
+function desenharGlossario() {
+  const linha = (badge, texto) => el('li', {}, badge, document.createTextNode(` ${texto}`));
+  $('an-glossario').replaceChildren(
+    el('summary', { textContent: 'Glossário: sinais e explicações candidatas' }),
+    el('p', { className: 'dica', textContent: 'Pontuação máx.: 0–100, quanto a seção foge do padrão das vizinhas/zona/outro turno (10 × desvio robusto, limitado a 100). Explicações candidatas são causas técnicas normais detectadas nos dados que podem explicar o sinal.' }),
+    ...Object.entries(GRUPOS).map(([g, nome]) => el('div', {}, el('h4', { textContent: nome }),
+      el('ul', {}, ...Object.entries(SINAIS).filter(([, v]) => v[0] === g).map(([c, v]) => linha(badgeSinal(c), v[2]))))),
+    el('h4', { textContent: 'Explicações candidatas' }),
+    el('ul', {}, ...Object.entries(EXPLICACOES).map(([c, v]) => linha(badgeExp(c), v[1]))));
+}
+
+
 function renderAnaliseUfs() {
   const coleta = new Map((ultimoEstado?.ufs ?? []).map((u) => [u.uf, u.status]));
   const dados = new Map(an.ufs.map((u) => [u.uf, u]));
@@ -380,14 +421,14 @@ async function carregarRanking() {
   const r = await obterJson(`/api/analise/${uf}/ranking?limite=200&sinal=${encodeURIComponent(sinal)}`);
   if (an.rankingDe !== uf) {
     $('an-sinal').replaceChildren(el('option', { value: '', textContent: 'todos' }),
-      ...r.sinais.map((s) => el('option', { value: s.sinal, textContent: `${s.sinal} (${num(s.n)})` })));
+      ...r.sinais.map((s) => el('option', { value: s.sinal, textContent: `${SINAIS[s.sinal]?.[1] ?? s.sinal} (${num(s.n)})` })));
     $('an-secao').hidden = true;
   }
   an.rankingDe = uf;
   $('an-msg').textContent = `${num(r.secoes.length)} seções destoantes${r.secoes.length === 200 ? ' (primeiras 200)' : ''}; clique numa linha para ver os sinais`;
   $('an-ranking').tBodies[0].replaceChildren(...r.secoes.map((s) => {
     const tr = el('tr', {}, td(s.mun), td(s.zona), td(s.secao), td(String(s.pontuacao)),
-      el('td', {}, ...s.sinais.map((x) => el('span', { className: 'sinal', textContent: x }))), td(s.explicacoes.join(', ') || '—'));
+      tdBadges(s.sinais, badgeSinal), tdBadges(listaExp(s.explicacoes), badgeExp));
     tr.addEventListener('click', () => {
       for (const o of $('an-ranking').querySelectorAll('tr.sel')) o.classList.remove('sel');
       tr.classList.add('sel');
@@ -465,10 +506,10 @@ async function abrirSecao(uf, s) {
       el('h4', { textContent: 'Sinais (verificar as explicações candidatas antes de qualquer conclusão)' }),
       el('table', {}, el('thead', {}, el('tr', {}, ...['Pleito', 'Cruzamento', 'Sinal', 'Pontuação', 'Valor', 'Referência', 'Explicações candidatas', 'Detalhe']
         .map((h) => el('th', { textContent: h })))),
-      el('tbody', {}, ...d.achados.map((a) => el('tr', {}, td(String(a.pleito)), td(a.cruzamento), td(a.sinal), td(String(a.pontuacao)),
+      el('tbody', {}, ...d.achados.map((a) => el('tr', {}, td(String(a.pleito)), td(a.cruzamento), tdBadges([a.sinal], badgeSinal), td(String(a.pontuacao)),
         td(a.valor == null ? null : String(Math.round(a.valor * 10000) / 10000)),
         td(a.referencia == null ? null : String(Math.round(a.referencia * 10000) / 10000)),
-        td(a.explicacoesCandidatas || '—'), el('td', {}, el('code', { textContent: a.detalhe ?? '' })))))));
+        tdBadges(listaExp(a.explicacoesCandidatas), badgeExp), el('td', {}, el('code', { textContent: a.detalhe ?? '' })))))));
   } catch (err) {
     box.replaceChildren(el('p', { className: 'erro', textContent: `não foi possível abrir a seção: ${err.message}` }));
   }
@@ -489,3 +530,5 @@ $('an-uf').addEventListener('change', () => carregarRanking().catch((err) => { $
 $('an-sinal').addEventListener('change', () => carregarRanking().catch((err) => { $('an-msg').textContent = err.message; }));
 atualizarAnalise();
 setInterval(atualizarAnalise, 3000);
+
+desenharGlossario();
