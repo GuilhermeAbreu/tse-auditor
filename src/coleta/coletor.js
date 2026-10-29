@@ -5,7 +5,7 @@ import { lerConfigSecoes } from '../tse/configSecoes.js';
 import { lerIndiceSecao } from '../tse/indiceSecao.js';
 import { nomeConfigSecoes, nomeIndiceSecao } from '../tse/urls.js';
 import { md5, md5DoEtag, sha512Hex, vscConfereComDiretorio, vscContemSha512 } from '../tse/integridade.js';
-import { empacotarMunicipio } from '../storage/empacotar.js';
+import { empacotarMunicipio, ZipCorrompidoError } from '../storage/empacotar.js';
 import { bytesLivres as bytesLivresDoDisco, ehErroDeVolume, garantirVolume } from '../storage/disco.js';
 
 const TIPOS_NO_VSC = new Set(['bu', 'rdv', 'log']);
@@ -301,7 +301,7 @@ export class Coletor extends EventEmitter {
     }
   }
 
-  async #coletarMunicipio(pleito, uf, mun) {
+  async #coletarMunicipio(pleito, uf, mun, retentativa = false) {
     const municipio = this.manifest.municipio(pleito, uf, mun);
     if (!municipio) return;
     this.estado.municipioAtual = `${mun} ${municipio.nome}`;
@@ -317,12 +317,20 @@ export class Coletor extends EventEmitter {
     });
     if (interrompido) return; // o staging fica para a próxima execução; não empacota pela metade
     if (municipio.empacotado_em && !(await existe(staging))) return; // nada novo para o zip
-    const { bytes } = await empacotarMunicipio({
-      pastaStaging: staging,
-      caminhoZip: this.#caminhoZip(pleito, uf, mun),
-      bytesLivres: this.bytesLivres,
-      minLivreBytes: this.minLivreBytes,
-    });
+    let bytes;
+    try {
+      ({ bytes } = await empacotarMunicipio({
+        pastaStaging: staging,
+        caminhoZip: this.#caminhoZip(pleito, uf, mun),
+        bytesLivres: this.bytesLivres,
+        minLivreBytes: this.minLivreBytes,
+      }));
+    } catch (err) {
+      if (!(err instanceof ZipCorrompidoError) || retentativa) throw err;
+      this.manifest.reabrirMunicipio(pleito, uf, mun);
+      this.manifest.registrarEvento('aviso', uf, `zip corrompido posto de lado e município ${mun} (${pleito}) rebaixado: ${err.caminhoZip}`);
+      return this.#coletarMunicipio(pleito, uf, mun, true);
+    }
     this.manifest.marcarEmpacotado(pleito, uf, mun, bytes);
   }
 

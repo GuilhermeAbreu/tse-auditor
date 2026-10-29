@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Coletor } from '../../src/coleta/coletor.js';
@@ -228,4 +228,19 @@ test('HD inacessível interrompe com mensagem clara', async (t) => {
   await coletor.executar();
   assert.match(coletor.estado.motivoParada, /^HD inacessível: .*O HD está conectado\?/);
   assert.equal(manifest.eventos(1)[0].nivel, 'erro');
+});
+
+test('zip corrompido é posto de lado e refeito a partir do staging', async (t) => {
+  const { dados, manifest, coletor } = await montar(t);
+  await coletor.executar();
+  const pasta = path.join(dados, 'raw/AC/3220');
+  const caminhoZip = path.join(pasta, '01066.zip');
+  await writeFile(caminhoZip, Buffer.from('lixo que não é um zip'));
+  manifest.finalizarSecao(FX.secao('3220', '0077'), { status: 'erro', erro: 'x' });
+
+  await coletor.executar();
+  assert.ok((await readdir(pasta)).some((n) => n.startsWith('01066.zip.corrompido-')));
+  assert.equal((await lerZip(caminhoZip)).size, 6);
+  assert.equal(manifest.secao(S77).status, 'completa');
+  assert.ok(manifest.eventos(20).some((e) => e.nivel === 'aviso' && /zip corrompido/.test(e.msg)));
 });
