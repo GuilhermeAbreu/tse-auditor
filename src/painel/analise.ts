@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { desloc, linhas, lit, turnosDosPleitos } from '../cruzamentos/comum.ts';
 import { UFS } from '../ufs.ts';
+import { balancoSecao } from './migracao.ts';
 import type { Eleicoes, EstadoPainel, Linha, Turnos } from '../tipos/dominio.ts';
 
 export type EstadoJob = 'na fila' | 'rodando' | 'concluído' | 'erro';
@@ -97,7 +98,8 @@ export async function detalharSecao(
   const onde = `upper(uf) = ${lit(uf.toUpperCase())} AND mun = ${lit(mun)} AND zona = ${lit(zona)} AND secao = ${lit(secao)}`;
   const ts = (c: string) => `strftime(${c}, '%Y-%m-%d %H:%M:%S') ${c}`;
   const turnos = await consultar(`SELECT pleito, status, local, aptos, comparecimento, abstencao,
-      qtdHabilitacaoBiometrica, qtdHabilitacaoMesario, qtdHabilitacaoAnoNascimento, tipoUrna, substituida,
+      qtdHabilitacaoBiometrica, qtdHabilitacaoMesario, qtdHabilitacaoAnoNascimento, logHabBiometrica, logHabMesario,
+      logHabAnoNascimento, tipoUrna, substituida,
       secoesAgregadas, agregadaEm, inconsistencias, logDia, ${ts('abertura')}, ${ts('encerramento')},
       ${ts('logPrimeiroVoto')}, ${ts('logUltimoVoto')}
     FROM ${parquet(dados, uf, 'secoes')} WHERE ${onde} ORDER BY pleito`);
@@ -128,7 +130,12 @@ export async function detalharSecao(
     SELECT pleito, strftime(min(ts), '%H:%M:%S') primeiroVoto, strftime(max(ts), '%H:%M:%S') ultimoVoto, count(*)::INTEGER votos
     FROM vt GROUP BY pleito ORDER BY pleito`);
   const linhaDoTempo = extremos.map((x) => ({ ...x, intervalos: intervalos.filter((i) => i.pleito === x.pleito) }));
-  return { uf, mun, zona, secao, horasParaBrasilia: desloc(uf), turnos, presidente, achados, linhaDoTempo };
+  // saldo 1º → 2º turno (os dois menores pleitos da seção, com BU)
+  const [t1, t2] = turnos.filter((t) => t.comparecimento != null);
+  const porChave = (pleito: unknown) => Object.fromEntries(presidente.filter((p) => p.pleito === pleito)
+    .map((p) => [p.tipo === 'nominal' ? `c${p.numero}` : String(p.tipo), Number(p.votos)]));
+  const balanco = t1 && t2 ? balancoSecao(porChave(t1.pleito), porChave(t2.pleito), Number(t1.comparecimento), Number(t2.comparecimento)) : null;
+  return { uf, mun, zona, secao, horasParaBrasilia: desloc(uf), turnos, presidente, achados, linhaDoTempo, balanco };
 }
 
 // Pleitos baixados para a UF (pastas raw/<UF>/<pleito>).

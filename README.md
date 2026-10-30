@@ -77,13 +77,16 @@ Nada é fixo no código para um ano específico: eleições, turnos e caminhos d
 - 1º × 2º turno: votos ou % de cada candidato, brancos e nulos. Comparar UFs: % por candidato, abstenção e mesário por UF.
 - Zonas e seções: % do candidato no 1º (x) × 2º turno (y), com a diagonal de referência e as seções com achados em destaque; clicar numa seção abre o detalhe. Até 20 000 seções (as de maior pontuação primeiro).
 - Histograma da liberação pelo mesário por seção (faixas de 2 p.p.), 1º × 2º turno.
+- Migração estimada 1º → 2º turno (diagrama de fluxo e tabela): que fração de cada grupo do 1º turno (cada candidato com ≥ 2% dos válidos, outros, brancos e nulos, abstenção) foi para cada destino do 2º (finalistas, brancos e nulos, abstenção). É inferência ecológica: regressão de Goodman com cada linha restrita a somar 100%, sobre todas as seções do escopo com os dois turnos (mínimo 30), ponderada pelos aptos (`src/painel/migracao.ts`). Mostra o erro médio por seção e o R² de cada destino. Vale para o conjunto, nunca para uma seção ou um eleitor.
 - Nomes e partidos dos candidatos vêm do arquivo oficial de resultados do TSE (`br-c0001-e<eleição>-u.json`), guardados em `~/.cache/tse-auditor/`; sem acesso, aparece "Candidato <número>".
 - Votos de presidente sempre pelo BU; % de candidato sobre os votos válidos (nominais), exceto no gráfico 1º × 2º turno (sobre o comparecimento).
 
 **Análise › Ranking**
 - Glossário dos sinais e das explicações candidatas.
 - Ranking de seções destoantes por UF, com filtro por sinal.
-- Ao clicar numa seção, um painel mostra: por que ela apareceu (em linguagem comum), a comparação entre os turnos (eleitores, forma de habilitação, votos para presidente) e a linha do tempo dos votos ao longo do dia.
+- Ao clicar numa seção, um painel mostra: por que ela apareceu (em linguagem comum), a comparação entre os turnos (eleitores, forma de habilitação, votos para presidente), o balanço 1º → 2º turno e a linha do tempo dos votos ao longo do dia.
+- Forma de habilitação: quando o BU e o log da urna discordam (ex.: biometria e mesário trocados), o valor do log aparece ao lado, com um aviso.
+- Balanço 1º → 2º turno: votos que ficaram livres (eliminados, brancos/nulos que caíram, eleitores a mais) e, para cada ganho, a faixa possível de quanto veio de eleitores a mais e quanto de votos liberados. É só o saldo líquido; o voto é secreto e não há como saber quem votou em quem.
 
 ## Linha de comando
 

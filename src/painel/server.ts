@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { detalharSecao, FilaAnalise, listarUfs, ranking, turnosPelasEleicoes } from './analise.ts';
-import { comparativo, distribuicao, dispersao, mapa, nomesCandidatos, ParametroInvalido, ufsComparacao } from './graficos.ts';
+import { comparativo, distribuicao, dispersao, mapa, migracao, nomesCandidatos, ParametroInvalido, ufsComparacao } from './graficos.ts';
 import { PADRAO } from '../config.ts';
 import { UFS } from '../ufs.ts';
 import type { AddressInfo } from 'node:net';
@@ -191,13 +191,14 @@ export function criarPainel({ controle, fila = new FilaAnalise({ turnosDe: turno
     const pasta = dados();
     if (!pasta) return json(res, 409, { erro: 'sem configuração' });
     if (req.method === 'GET' && pathname === '/api/analise/ufs') return json(res, 200, { ufs: await listarUfs(pasta) });
-    const g = /^\/api\/analise\/(comparativo|ufs-comparacao|dispersao|distribuicao|mapa|candidatos)$/.exec(pathname)?.[1];
+    const g = /^\/api\/analise\/(comparativo|ufs-comparacao|dispersao|distribuicao|mapa|migracao|candidatos)$/.exec(pathname)?.[1];
     if (g) {
       if (req.method !== 'GET') return json(res, 405, { erro: 'método não permitido' });
       const ufs = (q.get('ufs') ?? '').toLowerCase().split(',').map((u) => u.trim()).filter(Boolean);
       const el = controle.eleicoes;
       try {
         if (g === 'comparativo') return json(res, 200, await comparativo(pasta, { escopo: q.get('escopo'), ufs, zona: q.get('zona'), mun: q.get('mun') }, el));
+        if (g === 'migracao') return json(res, 200, await migracao(pasta, { escopo: q.get('escopo'), ufs, zona: q.get('zona'), mun: q.get('mun') }, el));
         if (g === 'ufs-comparacao') return json(res, 200, await ufsComparacao(pasta, { ufs }, el));
         if (g === 'dispersao') {
           return json(res, 200, await dispersao(pasta, { uf: (q.get('uf') ?? '').toLowerCase(), nivel: q.get('nivel') ?? 'zona', candidato: q.get('candidato') }, el));

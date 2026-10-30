@@ -57,7 +57,9 @@
  * @typedef {{ pleito: number, tipo: string, numero?: number, votos: number }} VotoPresidente
  * @typedef {{ pleito: number, [campo: string]: any }} TurnoSecao colunas da seção extraída (aptos, status, local…)
  * @typedef {{ mun: string, zona: string, secao: string, horasParaBrasilia: number, turnos: TurnoSecao[],
- *   achados: Achado[], presidente: VotoPresidente[], linhaDoTempo: LinhaDoTempo[] }} DetalheSecao
+ *   achados: Achado[], presidente: VotoPresidente[], linhaDoTempo: LinhaDoTempo[], balanco: Balanco | null }} DetalheSecao
+ * @typedef {{ chave: string, ganho: number, deNovos: [number, number], deLiberados: [number, number] }} Ganho
+ * @typedef {{ fontes: { chave: string, votos: number }[], novos: number, liberados: number, ganhos: Ganho[], fecha: boolean }} Balanco
  */
 
 /**
@@ -683,6 +685,42 @@ function frase(a, nomeTurno) {
 
 function fecharModal() { $('an-modal').close(); }
 
+/** Nome legível de uma chave de votos ('c13', 'branco', 'branco_nulo', 'abstencao'…). @param {string} k */
+function rotuloChave(k) {
+  if (/^c\d+$/.test(k)) return nomeCand(Number(k.slice(1)));
+  return ({ branco: 'Brancos', nulo: 'Nulos', branco_nulo: 'Brancos e nulos', outros: 'Outros candidatos', abstencao: 'Abstenção',
+    deixaram_de_votar: 'Deixaram de votar' })[k] ?? k;
+}
+
+// Saldo 1º → 2º turno da seção: de onde vieram os votos que mudaram de lugar e, para cada ganho, a faixa possível.
+/** @param {Balanco} b */
+function blocoBalanco(b) {
+  const totalLivre = b.liberados + b.novos;
+  const fontes = el('ul', { className: 'balanco-lista' },
+    ...b.fontes.map((f) => el('li', {}, el('span', { textContent: rotuloChave(f.chave) }), el('b', { textContent: num(f.votos) }))),
+    ...(b.novos ? [el('li', {}, el('span', { textContent: 'Eleitores a mais no 2º turno' }), el('b', { textContent: num(b.novos) }))] : []),
+    el('li', { className: 'total' }, el('span', { textContent: 'Total que mudou de lugar' }), el('b', { textContent: num(totalLivre) })));
+  /** @param {[number, number]} f */
+  const faixa = (f) => (f[0] === f[1] ? num(f[0]) : `${num(f[0])} a ${num(f[1])}`);
+  const destinos = el('table', { className: 'comparacao' },
+    el('thead', {}, el('tr', {}, el('th', { textContent: 'Ganhou' }), el('th', { textContent: 'Saldo' }),
+      el('th', { textContent: 'de eleitores a mais' }), el('th', { textContent: 'de votos liberados' }))),
+    el('tbody', {}, ...b.ganhos.map((g) => el('tr', {}, el('th', { textContent: rotuloChave(g.chave) }),
+      el('td', { className: 'sobe', textContent: `+${num(g.ganho)}` }), td(faixa(g.deNovos)), td(faixa(g.deLiberados))))));
+  const maior = b.ganhos.find((g) => g.chave !== 'deixaram_de_votar');
+  const frases = [];
+  if (maior && maior.deNovos[0] > 0) {
+    frases.push(`Mesmo que todos os ${num(b.liberados)} votos liberados tivessem ido para ${rotuloChave(maior.chave)}, ainda faltariam ${num(maior.deNovos[0])} votos, que só podem ter vindo de eleitores que não votaram no 1º turno (ou de quem trocou de lado).`);
+  }
+  if (!b.fecha) frases.push('Atenção: a soma das diferenças não bate com a diferença de comparecimento nesta seção; confira as inconsistências.');
+  return el('div', { className: 'balanco' },
+    el('div', { className: 'balanco-colunas' },
+      el('div', {}, el('h5', { textContent: 'Votos que ficaram livres' }), fontes),
+      el('div', {}, el('h5', { textContent: 'Para onde foram (saldo)' }), destinos)),
+    ...frases.map((f) => el('p', { textContent: f })),
+    el('p', { className: 'dica', textContent: 'É só o saldo líquido: eleitores podem ter trocado de lado nos dois sentidos, e o voto é secreto, então não há como saber quem votou em quem. As faixas mostram o mínimo e o máximo compatíveis com as contas. Para estimar a migração com mais seções, veja "Migração estimada" na Visão geral.' }));
+}
+
 /** @param {string} uf @param {SecaoRanking} s */
 async function abrirSecao(uf, s) {
   const modal = $('an-modal');
@@ -717,6 +755,7 @@ async function abrirSecao(uf, s) {
     // Tabela comparativa 1º × 2º turno.
     /** @param {TurnoSecao | undefined} t @param {string} k */
     const val = (t, k) => (t ? t[k] : null);
+    const c1 = val(t1, 'comparecimento'), c2 = val(t2, 'comparecimento');
     /** @param {TurnoSecao | undefined} t @param {string} chave */
     const votos = (t, chave) => {
       if (!t) return null;
@@ -734,9 +773,20 @@ async function abrirSecao(uf, s) {
     /** @param {string} rotulo @param {number | null} a @param {number | null} b @param {number | null} [baseA] @param {number | null} [baseB] @param {string} [chave] */
     const linha = (rotulo, a, b, baseA, baseB, chave) => el('tr', { className: destaque.has(chave) ? 'destaque' : '' },
       el('th', { textContent: rotulo }), td(fmt(a, baseA)), td(fmt(b, baseB)), dif(a, b));
+    // Liberação: BU com o valor do log ao lado quando os dois discordam (ex.: biometria e mesário trocados).
+    let divergeLog = false;
+    /** @param {TurnoSecao | undefined} t @param {string} campo @param {string} campoLog @param {number | null} base */
+    const celHab = (t, campo, campoLog, base) => {
+      const v = val(t, campo), l = val(t, campoLog);
+      if (!t || l == null || !t.logDia || l === v) return td(fmt(v, base));
+      divergeLog = true;
+      return el('td', {}, fmt(v, base), el('span', { className: 'log-diverge', title: 'valor contado no log da urna', textContent: ` · log ${num(l)}` }));
+    };
+    /** @param {string} rotulo @param {string} campo @param {string} campoLog @param {string} [chave] */
+    const linhaHab = (rotulo, campo, campoLog, chave) => el('tr', { className: chave && destaque.has(chave) ? 'destaque' : '' },
+      el('th', { textContent: rotulo }), celHab(t1, campo, campoLog, c1), celHab(t2, campo, campoLog, c2), dif(val(t1, campo), val(t2, campo)));
     /** @param {string} titulo */
     const grupo = (titulo) => el('tr', { className: 'grupo' }, el('th', { colSpan: 4, textContent: titulo }));
-    const c1 = val(t1, 'comparecimento'), c2 = val(t2, 'comparecimento');
     const chavesPres = [...new Set(d.presidente.map((p) => (p.tipo === 'nominal' ? `c${p.numero}` : p.tipo)))]
       .sort((x, y) => (x[0] === 'c') === (y[0] === 'c') ? x.localeCompare(y, 'pt', { numeric: true }) : x[0] === 'c' ? -1 : 1);
     const tabela = el('table', { className: 'comparacao' },
@@ -747,9 +797,9 @@ async function abrirSecao(uf, s) {
         linha('Compareceram', c1, c2, val(t1, 'aptos'), val(t2, 'aptos')),
         linha('Abstenção', val(t1, 'abstencao'), val(t2, 'abstencao'), val(t1, 'aptos'), val(t2, 'aptos')),
         grupo('Como o eleitor foi liberado (% de quem compareceu)'),
-        linha('Biometria', val(t1, 'qtdHabilitacaoBiometrica'), val(t2, 'qtdHabilitacaoBiometrica'), c1, c2),
-        linha('Pelo mesário', val(t1, 'qtdHabilitacaoMesario'), val(t2, 'qtdHabilitacaoMesario'), c1, c2, 'mesario'),
-        linha('Ano de nascimento', val(t1, 'qtdHabilitacaoAnoNascimento'), val(t2, 'qtdHabilitacaoAnoNascimento'), c1, c2),
+        linhaHab('Biometria', 'qtdHabilitacaoBiometrica', 'logHabBiometrica'),
+        linhaHab('Pelo mesário', 'qtdHabilitacaoMesario', 'logHabMesario', 'mesario'),
+        linhaHab('Ano de nascimento', 'qtdHabilitacaoAnoNascimento', 'logHabAnoNascimento'),
         grupo('Presidente (% de quem compareceu)'),
         ...chavesPres.map((k) => linha(k[0] === 'c' ? `Candidato ${k.slice(1)}` : k === 'branco' ? 'Brancos' : k === 'nulo' ? 'Nulos' : k,
           votos(t1, k), votos(t2, k), c1, c2, k))));
@@ -780,6 +830,8 @@ async function abrirSecao(uf, s) {
       el('h4', { textContent: 'Por que esta seção apareceu' }), ...cartoesAchados,
       el('p', { className: 'dica', textContent: 'Seção destoante não é prova de nada: confira as explicações antes de qualquer conclusão.' }),
       el('h4', { textContent: 'Comparação entre os turnos' }), tabela,
+      ...(divergeLog ? [el('p', { className: 'aviso-diverge', textContent: 'O BU e o log da urna discordam sobre como os eleitores foram liberados nesta seção (valor do log ao lado). Antes de tirar conclusões sobre biometria ou mesário, confira "Inconsistências" em Dados técnicos.' })] : []),
+      ...(d.balanco ? [el('h4', { textContent: 'Balanço 1º → 2º turno (presidente)' }), blocoBalanco(d.balanco)] : []),
       el('h4', { textContent: 'Votos ao longo do dia (a cada 10 min)' }), legenda, tempos,
       tecnico);
   } catch (err) {
@@ -837,6 +889,10 @@ desenharGlossario();
  * @typedef {{ uf: string, coletado: boolean, secoes?: number, candidatos: CandidatoTotal[], validos: number, brancos: number,
  *   nulos: number, vencedor: number | null, margem: number | null }} UfMapa
  * @typedef {{ turno: number, pleito: number | null, ufs: UfMapa[] }} Mapa
+ * @typedef {{ chave: string, total: number }} GrupoMigracao
+ * @typedef {{ secoes: number, minimo: number, fontes: GrupoMigracao[], destinos: GrupoMigracao[],
+ *   fluxos: { de: string, para: string, fracao: number, votos: number }[], matriz: number[][],
+ *   ajuste: { rmse: number, r2: Record<string, number> } | null }} Migracao
  */
 
 const vg = {
@@ -854,7 +910,7 @@ const vg = {
   mapaPronto: false,
   nomesCarregados: false,
   assinatura: '',
-  /** @type {{ comp?: Comparativo, ufsComp?: UfsComparacao | null, hist?: Distribuicao, mapa?: Mapa, disp?: Dispersao | null }} */
+  /** @type {{ comp?: Comparativo, ufsComp?: UfsComparacao | null, hist?: Distribuicao, mapa?: Mapa, disp?: Dispersao | null, migracao?: Migracao }} */
   dados: {},
 };
 // Paleta categórica dos candidatos (mesma cor em todos os gráficos, pela ordem de votos no 1º turno do Brasil coletado).
@@ -1150,6 +1206,57 @@ function renderDispersao(d) {
     + (porSecao ? ' Clique numa seção para ver o detalhe.' : '');
 }
 
+/** @param {string} k */
+const corChave = (k) => (/^c\d+$/.test(k) ? corDe(Number(k.slice(1))) : k === 'branco_nulo' ? COR_BRANCO : k === 'outros' ? COR_OUTROS : COR_NULO);
+
+// Sankey 1º → 2º turno e a matriz (% de cada grupo do 1º turno que foi para cada destino do 2º).
+/** @param {Migracao} m */
+function renderMigracao(m) {
+  const tabela = $('vg-migracao-tabela');
+  if (!m.ajuste) {
+    tabela.replaceChildren();
+    return vazio('g-migracao', m.secoes
+      ? `Poucas seções com os dois turnos no escopo (${num(m.secoes)}; mínimo ${num(m.minimo)}).`
+      : 'Sem seções com os dois turnos extraídos no escopo.');
+  }
+  const { t, opcao } = base();
+  const n1 = (/** @type {string} */ k) => `1º · ${rotuloChave(k)}`;
+  const n2 = (/** @type {string} */ k) => `2º · ${rotuloChave(k)}`;
+  const total = m.fontes.reduce((s, f) => s + f.total, 0);
+  const links = m.fluxos.filter((f) => f.votos > 0 && f.votos >= total * 0.001).map((f) => ({
+    source: n1(f.de), target: n2(f.para), value: f.votos, fracao: f.fracao, de: f.de,
+    lineStyle: { color: corChave(f.de), opacity: 0.35 },
+  }));
+  desenhar('g-migracao', {
+    ...opcao,
+    legend: undefined,
+    tooltip: { ...opcao.tooltip, trigger: 'item', formatter: (/** @type {any} */ p) => (p.dataType === 'edge'
+      ? `${esc(p.data.source)} → ${esc(p.data.target)}<br><b>~${num(p.data.value)}</b> votos estimados (${fmtPct(p.data.fracao)} do grupo)`
+      : `${esc(p.name)}<br>${num(Math.round(p.value))} votos`) },
+    series: [{
+      type: 'sankey', left: 8, right: 150, top: 8, bottom: 8, nodeGap: 10, nodeAlign: 'justify', draggable: false,
+      emphasis: { focus: 'adjacency' },
+      label: { color: t.texto, fontSize: 12 },
+      data: [...m.fontes.map((f) => ({ name: n1(f.chave), itemStyle: { color: corChave(f.chave), borderColor: corChave(f.chave) } })),
+        ...m.destinos.map((d) => ({ name: n2(d.chave), itemStyle: { color: corChave(d.chave), borderColor: corChave(d.chave) } }))],
+      links,
+    }],
+  });
+  tabela.replaceChildren(el('table', { className: 'comparacao' },
+    el('thead', {}, el('tr', {}, el('th', { textContent: '1º turno → 2º turno' }), ...m.destinos.map((d) => el('th', { textContent: rotuloChave(d.chave) })))),
+    el('tbody', {}, ...m.fontes.map((f, i) => el('tr', {},
+      el('th', { textContent: `${rotuloChave(f.chave)} (${num(f.total)})` }),
+      ...m.destinos.map((d, k) => {
+        const fr = m.matriz[i]?.[k] ?? 0;
+        return el('td', { className: fr >= 0.5 ? 'forte' : '', textContent: fr < 0.0005 ? '—' : `${fmtPct(fr, 0)} (~${num(Math.round(fr * f.total))})` });
+      }))))));
+  const r2 = m.destinos.filter((d) => d.chave.startsWith('c')).map((d) => `${rotuloChave(d.chave)} ${fmtPct(m.ajuste?.r2[d.chave], 0)}`).join(', ');
+  $('vg-migracao-nota').textContent = `Estimativa estatística (inferência ecológica) sobre ${num(m.secoes)} seções do escopo: compara, seção a seção, `
+    + 'o resultado do 1º turno com o do 2º e encontra a divisão de cada grupo que melhor explica todas as seções juntas. Cada linha da tabela soma 100%. '
+    + `Erro médio por seção: ${fmtPP(m.ajuste.rmse).replace(/^[+−±]/, '')}; quanto da variação entre seções o modelo explica: ${r2}. `
+    + 'Vale para o conjunto, nunca para uma seção ou um eleitor (o voto é secreto); números pequenos (poucas seções, zona única) são menos confiáveis.';
+}
+
 function redesenhar() {
   if (!temEcharts()) return;
   const d = vg.dados;
@@ -1158,6 +1265,7 @@ function redesenhar() {
   if (d.hist) renderHist(d.hist);
   if (d.mapa) renderMapa(d.mapa);
   renderDispersao(d.disp);
+  if (d.migracao) renderMigracao(d.migracao);
 }
 
 /** @param {string} id @param {unknown} err */
@@ -1198,6 +1306,10 @@ async function carregarEscopo() {
     vg.dados.hist = await obterJson(`/api/analise/distribuicao?ufs=${ufsQs}&metrica=mesario`);
     renderHist(/** @type {Distribuicao} */ (vg.dados.hist));
   } catch (err) { falhou('g-hist', err); }
+  try {
+    vg.dados.migracao = /** @type {Migracao} */ (await obterJson(`/api/analise/migracao?${escopoQs()}`));
+    renderMigracao(vg.dados.migracao);
+  } catch (err) { falhou('g-migracao', err); }
 }
 
 async function carregarDispersao() {

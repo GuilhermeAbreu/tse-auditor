@@ -163,6 +163,15 @@ table.comparacao th:first-child, table.comparacao tr.grupo th { text-align: left
 table.comparacao tr.grupo th { padding-top: 12px; color: var(--suave); font-size: 12px; text-transform: uppercase; border-bottom: none; }
 table.comparacao tr.destaque { background: rgba(210, 153, 34, .18); }
 td.sobe { color: var(--ok); }
+.log-diverge { color: var(--aviso); font-size: 12px; }
+.aviso-diverge { border-left: 3px solid var(--aviso); padding: 6px 10px; background: rgba(210, 153, 34, .1); }
+.balanco-colunas { display: grid; grid-template-columns: minmax(200px, 1fr) 2fr; gap: 16px; align-items: start; }
+@media (max-width: 720px) { .balanco-colunas { grid-template-columns: 1fr; } }
+.balanco-lista { list-style: none; margin: 0; padding: 0; }
+.balanco-lista li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--sutil); }
+.balanco-lista li.total { border-bottom: none; font-weight: 600; }
+.rolavel { overflow-x: auto; }
+table.comparacao td.forte { font-weight: 600; }
 td.desce { color: var(--erro); }
 .tempos { display: grid; gap: 8px; }
 .tempos h5 { margin: 6px 0 2px; }

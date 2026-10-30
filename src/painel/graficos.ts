@@ -8,6 +8,7 @@ import { DuckDBInstance } from '@duckdb/node-api';
 import { linhas, lit, turnosDosPleitos } from '../cruzamentos/comum.ts';
 import { preencher } from '../tse/urls.ts';
 import { UFS } from '../ufs.ts';
+import { estimarTransferencias, type Amostra } from './migracao.ts';
 import type { Eleicoes, Linha, Turnos } from '../tipos/dominio.ts';
 
 export class ParametroInvalido extends Error {}
@@ -345,4 +346,83 @@ export async function nomesCandidatos(
     for (const [n, v] of Object.entries(nomes)) candidatos[n] ??= v;
   }
   return { fonte, candidatos };
+}
+
+// ---- migração estimada 1º → 2º turno (inferência ecológica, ver migracao.ts) ----
+
+export const MIN_SECOES_MIGRACAO = 30;
+const PCT_GRUPO_PROPRIO = 0.02; // candidato eliminado com ≥ 2% dos válidos tem grupo próprio; os demais viram "outros"
+const MAX_ELIMINADOS = 4;
+
+// Por seção com os dois turnos ok: parte dos aptos em cada grupo do 1º turno (candidatos, brancos/nulos, abstenção)
+// e em cada destino do 2º (finalistas, brancos/nulos, abstenção). Devolve a matriz de transferência e os fluxos em votos.
+export async function migracao(dados: string, o: OpcoesComparativo, eleicoes?: Eleicoes | null): Promise<Linha> {
+  const escopo = o.escopo === 'uf' ? 'uf' : 'brasil';
+  const zona = o.zona || null;
+  const mun = o.mun || null;
+  if (zona && !/^\d{1,6}$/.test(zona)) throw new ParametroInvalido('zona inválida');
+  if (mun && !/^\d{1,6}$/.test(mun)) throw new ParametroInvalido('município inválido');
+  return emCache(JSON.stringify(['migracao', escopo, o.ufs ?? [], zona, mun]), dados, async (disp) => {
+    const ufs = escopo === 'brasil' ? disp : validarUfs(o.ufs ?? [], disp);
+    if ((zona || mun) && ufs.length !== 1) throw new ParametroInvalido('zona e município exigem uma única UF');
+    const turnos = await turnosDe(dados, disp, eleicoes);
+    const vazio = { escopo, ufs, zona, mun, secoes: 0, minimo: MIN_SECOES_MIGRACAO, fontes: [], destinos: [], fluxos: [], matriz: [], ajuste: null };
+    if (!ufs.length || turnos.primeiro == null || turnos.segundo == null) return vazio;
+    const [p1, p2] = [turnos.primeiro, turnos.segundo];
+    const S = fonte(ufs.map((u) => arquivo(dados, u, 'secoes')));
+    const V = fonte(ufs.map((u) => arquivo(dados, u, 'votos')));
+    const onde = `${zona ? `AND zona = ${lit(zona)}` : ''} ${mun ? `AND mun = ${lit(mun)}` : ''}`;
+    const cands = await consultar(`SELECT numero, sum(quantidade) FILTER (WHERE pleito = ${p1})::DOUBLE v1,
+        coalesce(sum(quantidade) FILTER (WHERE pleito = ${p2}), 0)::DOUBLE v2
+      FROM ${V} WHERE origem = 'BU' AND codigoCargo = 1 AND tipo = 'nominal' AND pleito IN (${p1}, ${p2}) ${onde}
+      GROUP BY numero ORDER BY v1 DESC NULLS LAST, numero`);
+    const finalistas = cands.filter((c) => Number(c.v2) > 0).map((c) => Number(c.numero));
+    const validos1 = cands.reduce((s, c) => s + Number(c.v1 ?? 0), 0);
+    const proprios = cands.filter((c) => !finalistas.includes(Number(c.numero)) && validos1 && Number(c.v1 ?? 0) / validos1 >= PCT_GRUPO_PROPRIO)
+      .slice(0, MAX_ELIMINADOS).map((c) => Number(c.numero));
+    const comGrupo = [...finalistas, ...proprios];
+    const temOutros = cands.some((c) => !comGrupo.includes(Number(c.numero)) && Number(c.v1 ?? 0) > 0);
+    // colunas: votos de cada grupo por turno; abstenção = aptos − comparecimento
+    const fontesSql = [
+      ...comGrupo.map((n) => ({ chave: `c${n}`, sql: `sum(quantidade) FILTER (WHERE pleito = ${p1} AND tipo = 'nominal' AND numero = ${n})` })),
+      ...(temOutros ? [{ chave: 'outros', sql: `sum(quantidade) FILTER (WHERE pleito = ${p1} AND tipo = 'nominal' AND numero NOT IN (${comGrupo.join(', ') || 'NULL'}))` }] : []),
+      { chave: 'branco_nulo', sql: `sum(quantidade) FILTER (WHERE pleito = ${p1} AND tipo IN ('branco', 'nulo'))` },
+    ];
+    const destinosSql = [
+      ...finalistas.map((n) => ({ chave: `c${n}`, sql: `sum(quantidade) FILTER (WHERE pleito = ${p2} AND tipo = 'nominal' AND numero = ${n})` })),
+      { chave: 'branco_nulo', sql: `sum(quantidade) FILTER (WHERE pleito = ${p2} AND tipo IN ('branco', 'nulo'))` },
+    ];
+    const col = (prefixo: string, xs: { sql: string }[]) => xs.map((x, i) => `coalesce(${x.sql}, 0)::DOUBLE ${prefixo}${i}`).join(', ');
+    const chave = 'uf, mun, zona, secao';
+    const linhasSec = await consultar(`WITH s AS (SELECT ${chave},
+          max(aptos) FILTER (WHERE pleito = ${p1})::DOUBLE a1, max(comparecimento) FILTER (WHERE pleito = ${p1})::DOUBLE c1,
+          max(aptos) FILTER (WHERE pleito = ${p2})::DOUBLE a2, max(comparecimento) FILTER (WHERE pleito = ${p2})::DOUBLE c2
+        FROM ${S} WHERE status = 'ok' AND pleito IN (${p1}, ${p2}) ${onde} GROUP BY ${chave}),
+      v AS (SELECT ${chave}, ${col('x', fontesSql)}, ${col('y', destinosSql)}
+        FROM ${V} WHERE origem = 'BU' AND codigoCargo = 1 AND pleito IN (${p1}, ${p2}) ${onde} GROUP BY ${chave})
+      SELECT * FROM s JOIN v USING (${chave}) WHERE a1 > 0 AND a2 > 0 AND c1 IS NOT NULL AND c2 IS NOT NULL`);
+    const nF = fontesSql.length + 1;
+    const nD = destinosSql.length + 1;
+    const amostras: Amostra[] = linhasSec.map((r) => {
+      const a1 = Number(r.a1), a2 = Number(r.a2);
+      return {
+        x: [...fontesSql.map((_, i) => Number(r[`x${i}`]) / a1), (a1 - Number(r.c1)) / a1],
+        y: [...destinosSql.map((_, i) => Number(r[`y${i}`]) / a2), (a2 - Number(r.c2)) / a2],
+        peso: a1,
+      };
+    });
+    const fontes = [...fontesSql.map((f) => f.chave), 'abstencao'].map((k, i) => ({
+      chave: k, total: linhasSec.reduce((s, r) => s + (i < fontesSql.length ? Number(r[`x${i}`]) : Number(r.a1) - Number(r.c1)), 0),
+    }));
+    const destinos = [...destinosSql.map((d) => d.chave), 'abstencao'].map((k, i) => ({
+      chave: k, total: linhasSec.reduce((s, r) => s + (i < destinosSql.length ? Number(r[`y${i}`]) : Number(r.a2) - Number(r.c2)), 0),
+    }));
+    if (amostras.length < MIN_SECOES_MIGRACAO) return { ...vazio, secoes: amostras.length, fontes, destinos };
+    const ajuste = estimarTransferencias(amostras, nF, nD);
+    const fluxos = fontes.flatMap((f, i) => destinos.map((d, k) => ({ de: f.chave, para: d.chave, fracao: ajuste.matriz[i]![k]!, votos: Math.round(ajuste.matriz[i]![k]! * f.total) })));
+    return {
+      escopo, ufs, zona, mun, secoes: amostras.length, minimo: MIN_SECOES_MIGRACAO, fontes, destinos, fluxos, matriz: ajuste.matriz,
+      ajuste: { rmse: ajuste.rmse, r2: Object.fromEntries(destinos.map((d, k) => [d.chave, ajuste.r2[k]!])) },
+    };
+  });
 }

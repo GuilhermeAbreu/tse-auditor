@@ -24,12 +24,12 @@ async function fixture() {
   const db = await (await DuckDBInstance.create(':memory:')).connect();
   const copiar = (nome: string, sql: string) => db.run(`COPY (${sql}) TO '${pasta}/${nome}.parquet' (FORMAT PARQUET)`);
   await copiar('secoes', `SELECT * FROM (VALUES
-    (3220, 'AC', '01392', '0001', '0010', 'ok', 1, 100, 80, 20, 70, 8, 2, 'secao', false, NULL, NULL, NULL, '2026-10-04',
+    (3220, 'AC', '01392', '0001', '0010', 'ok', 1, 100, 80, 20, 70, 8, 2, 70, 8, 2, 'secao', false, NULL, NULL, NULL, '2026-10-04',
       TIMESTAMP '2026-10-04 06:00:00', TIMESTAMP '2026-10-04 15:00:00', TIMESTAMP '2026-10-04 06:01:00', TIMESTAMP '2026-10-04 06:25:00'),
-    (3221, 'AC', '01392', '0001', '0010', 'ok', 1, 100, 85, 15, 70, 13, 2, 'secao', false, NULL, NULL, NULL, '2026-10-25',
+    (3221, 'AC', '01392', '0001', '0010', 'ok', 1, 100, 85, 15, 70, 13, 2, 13, 70, 2, 'secao', false, NULL, NULL, NULL, '2026-10-25',
       TIMESTAMP '2026-10-25 06:00:00', TIMESTAMP '2026-10-25 15:00:00', NULL, NULL))
     t(pleito, uf, mun, zona, secao, status, local, aptos, comparecimento, abstencao, qtdHabilitacaoBiometrica, qtdHabilitacaoMesario,
-      qtdHabilitacaoAnoNascimento, tipoUrna, substituida, secoesAgregadas, agregadaEm, inconsistencias, logDia, abertura, encerramento,
+      qtdHabilitacaoAnoNascimento, logHabBiometrica, logHabMesario, logHabAnoNascimento, tipoUrna, substituida, secoesAgregadas, agregadaEm, inconsistencias, logDia, abertura, encerramento,
       logPrimeiroVoto, logUltimoVoto)`);
   await copiar('votos', `SELECT * FROM (VALUES (3220, 'AC', '01392', '0001', '0010', 'BU', 1, 1, 'Presidente', 'nominal', 13, 50),
     (3220, 'AC', '01392', '0001', '0010', 'BU', 1, 1, 'Presidente', 'nominal', 22, 30))
@@ -76,6 +76,10 @@ test('rotas de análise: ufs, ranking com filtro e seção com linha do tempo', 
   assert.equal(s.presidente.length, 2);
   assert.equal(s.achados.length, 2);
   assert.equal(s.horasParaBrasilia, 2);
+  // 2º turno sem votos na fixture: o saldo aparece, mas não fecha com o comparecimento
+  assert.equal(s.balanco.novos, 5);
+  assert.equal(s.balanco.fecha, false);
+  assert.deepEqual([s.turnos[1].qtdHabilitacaoMesario, s.turnos[1].logHabMesario], [13, 70]);
   const [lt] = s.linhaDoTempo;
   assert.deepEqual([lt.pleito, lt.primeiroVoto, lt.ultimoVoto, lt.votos], [3220, '06:01:00', '06:25:00', 3]);
   // 06:01 biometria, 06:02 sem evento = mesário, 06:25 ano de nascimento
