@@ -10,7 +10,7 @@ function fetchRoteirizado(respostas: Roteiro[]) {
     chamadas.push({ url, opcoes });
     const r = respostas.shift()!;
     if (r instanceof Error) throw r;
-    return new Response(r.body ?? '', { status: r.status, headers: r.headers ?? {} });
+    return new Response(r.body ?? null, { status: r.status, headers: r.headers ?? {} });
   }) as unknown as typeof fetch;
   return { fetchImpl, chamadas };
 }
@@ -51,6 +51,15 @@ test('respeita Retry-After', async () => {
   const { esperas, dormir } = semEspera();
   await new HttpClient({ fetchImpl, dormir, esperaBaseMs: 100, aleatorio: () => 1 }).get('http://x/a');
   assert.deepEqual(esperas, [7000]);
+});
+
+test('304 sem pedido condicional é retentado; o pedido não leva cabeçalho condicional', async () => {
+  const { fetchImpl, chamadas } = fetchRoteirizado([{ status: 304 }, { status: 200, body: 'ok' }]);
+  const r = await new HttpClient({ fetchImpl, ...semEspera() }).get('http://x/a');
+  assert.equal(r.status, 200);
+  assert.equal(chamadas.length, 2);
+  const nomes = Object.keys(chamadas[0]!.opcoes.headers).map((h) => h.toLowerCase());
+  assert.ok(!nomes.includes('if-none-match') && !nomes.includes('if-modified-since'));
 });
 
 test('falha de rede também é retentada', async () => {
