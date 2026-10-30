@@ -151,6 +151,15 @@
           <span class="dica" id="cfg-concorrencia-dica">conexões simultâneas ao TSE (padrão 4)</span></label>
         <p id="cfg-concorrencia-alerta" class="alerta" hidden>Mais conexões ficam mais rápidas, mas pesam mais no servidor do TSE.</p>
       </fieldset>
+      <fieldset>
+        <legend>Pasta onde salvar os arquivos</legend>
+        <div class="linha-pasta">
+          <input type="text" id="cfg-hd" required spellcheck="false" autocomplete="off" aria-describedby="cfg-hd-dica">
+          <button type="button" id="cfg-hd-escolher">Escolher…</button>
+        </div>
+        <p class="dica" id="cfg-hd-dica">Os arquivos ficam numa subpasta tse&lt;ano&gt; dentro dela; nada é gravado fora disso.</p>
+        <p id="cfg-hd-alerta" class="alerta" hidden></p>
+      </fieldset>
       <details id="avancado">
         <summary>Avançado</summary>
         <div id="cfg-avancado"></div>
@@ -167,6 +176,18 @@
       <p><button type="submit" value="aplicar">Aplicar</button>
         <button type="submit" value="iniciar">Aplicar e iniciar</button></p>
     </form>
+    <dialog id="pasta-modal" aria-labelledby="pasta-titulo">
+      <button type="button" id="pasta-fechar" class="fechar" aria-label="fechar">×</button>
+      <h3 id="pasta-titulo">Escolher a pasta onde salvar</h3>
+      <div id="pasta-atalhos" class="chips"></div>
+      <p class="pasta-atual"><button type="button" id="pasta-subir" title="pasta acima">↑</button> <code id="pasta-caminho">—</code></p>
+      <p id="pasta-info" class="dica"></p>
+      <ul id="pasta-lista" class="pasta-lista"></ul>
+      <p class="linha-pasta"><input type="text" id="pasta-nova" placeholder="nome da nova pasta" maxlength="120" spellcheck="false">
+        <button type="button" id="pasta-criar">Criar pasta aqui</button></p>
+      <p id="pasta-msg" role="status"></p>
+      <p><button type="button" id="pasta-usar" class="primario">Usar esta pasta</button> <button type="button" id="pasta-cancelar">Cancelar</button></p>
+    </dialog>
   </section>
   </main>
 

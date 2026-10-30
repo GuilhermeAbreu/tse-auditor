@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { detalharSecao, FilaAnalise, listarUfs, ranking, turnosPelasEleicoes } from './analise.ts';
 import { comparativo, distribuicao, dispersao, mapa, migracao, nomesCandidatos, ParametroInvalido, ufsComparacao } from './graficos.ts';
 import { PADRAO } from '../config.ts';
+import { criarPasta, listarPastas, PastaInvalida } from './pastas.ts';
 import { caminhoPreferencias, lerPreferencias, salvarPreferencias, validarPreferencias, type Preferencias } from '../preferencias.ts';
 import { UFS } from '../ufs.ts';
 import type { AddressInfo } from 'node:net';
@@ -165,6 +166,18 @@ export function criarPainel({
         });
       }
       if (req.method === 'POST' && pathname === '/api/config') return aplicarConfig(req, res, controle);
+      if (pathname === '/api/pastas' && (req.method === 'GET' || req.method === 'POST')) {
+        try {
+          if (req.method === 'GET') return json(res, 200, await listarPastas(new URL(req.url!, 'http://localhost').searchParams.get('caminho')));
+          const corpo = (await lerJson(req)) as { caminho?: unknown; nome?: unknown } | null;
+          const nova = await criarPasta(String(corpo?.caminho ?? ''), String(corpo?.nome ?? ''));
+          return json(res, 200, await listarPastas(nova));
+        } catch (err) {
+          if (err instanceof PastaInvalida) return json(res, 400, { erro: err.message });
+          if (err instanceof CorpoInvalido) return json(res, err.status, { erro: err.message });
+          throw err;
+        }
+      }
       if (req.method === 'GET' && pathname === '/api/preferencias') return json(res, 200, { ...(await lerPreferencias(preferencias)), servico });
       if (req.method === 'POST' && pathname === '/api/preferencias') {
         let p: Preferencias | null;

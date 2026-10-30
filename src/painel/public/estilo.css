@@ -209,3 +209,13 @@ dialog pre { white-space: pre-wrap; font-size: 12px; }
 .area.alta { height: 420px; }
 .area .vazio { display: flex; height: 100%; align-items: center; justify-content: center; color: var(--suave); text-align: center; padding: 16px; }
 @media (max-width: 640px) { .area, .area.alta { height: 300px; } }
+
+/* pasta onde salvar */
+.linha-pasta { display: flex; gap: 8px; flex-wrap: wrap; }
+.linha-pasta input { flex: 1 1 320px; min-width: 0; font-family: ui-monospace, monospace; }
+#pasta-modal { width: min(640px, 96vw); }
+.pasta-atual { display: flex; align-items: center; gap: 8px; word-break: break-all; }
+.pasta-lista { list-style: none; margin: 0 0 12px; padding: 0; max-height: 45vh; overflow-y: auto; border: 1px solid var(--borda); border-radius: 8px; }
+.pasta-lista li button { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--sutil); border-radius: 0; background: transparent; padding: 8px 12px; }
+.pasta-lista li button:hover, .pasta-lista li button:focus-visible { background: var(--sutil); }
+.pasta-lista li.vazia { padding: 8px 12px; color: var(--suave); }

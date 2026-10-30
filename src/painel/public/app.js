@@ -4,7 +4,8 @@
  * Elementos com tipo específico usados pelo painel (os demais são HTMLElement).
  * @typedef {{
  *   'btn-iniciar': HTMLButtonElement, 'btn-parar': HTMLButtonElement,
- *   'cfg-concorrencia': HTMLInputElement, 'cfg-iniciar-ao-ligar': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLInputElement,
+ *   'cfg-concorrencia': HTMLInputElement, 'cfg-iniciar-ao-ligar': HTMLInputElement, 'cfg-hd': HTMLInputElement,
+ *   'cfg-hd-escolher': HTMLButtonElement, 'pasta-subir': HTMLButtonElement, 'pasta-modal': HTMLDialogElement, 'pasta-nova': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLInputElement,
  *   'an-sinal': HTMLSelectElement, 'vg-zona': HTMLSelectElement, 'vg-disp-uf': HTMLSelectElement, 'vg-disp-cand': HTMLSelectElement, 'an-modal': HTMLDialogElement, 'gl-modal': HTMLDialogElement, 'an-ranking': HTMLTableElement,
  * }} Ids
  */
@@ -247,9 +248,6 @@ const AVANCADO = [
   ['Análise', [
     { campo: 'analisarAoConcluir', rotulo: 'Extrair e analisar ao concluir', tipo: 'checkbox', dica: 'quando a coleta de uma UF termina, roda extrair + analisar para ela' },
   ]],
-  ['Caminhos', [
-    { campo: 'hd', rotulo: 'HD externo', tipo: 'text', dica: 'pasta raiz do HD; os dados ficam só em <HD>/tse<ano>' },
-  ]],
 ];
 
 /** @type {Config | null} */
@@ -292,6 +290,8 @@ function campoAvancado({ campo, rotulo, dica, tipo = 'number' }) {
 /** @param {Opcoes} origem */
 function preencherOpcoes(origem) {
   $('cfg-concorrencia').value = origem.concorrencia;
+  $('cfg-hd').value = origem.hd ?? '';
+  atualizarPasta();
   for (const entrada of /** @type {NodeListOf<HTMLInputElement>} */ ($('cfg-avancado').querySelectorAll('[data-campo]'))) {
     if (entrada.type === 'checkbox') entrada.checked = obter(origem, /** @type {string} */ (entrada.dataset.campo)) !== false;
     else entrada.value = obter(origem, /** @type {string} */ (entrada.dataset.campo));
@@ -327,9 +327,6 @@ function renderConfig() {
   $('cfg-avancado').replaceChildren(...AVANCADO.map(([titulo, campos]) =>
     el('fieldset', {}, el('legend', { textContent: titulo }), ...campos.map(campoAvancado))));
   /** @type {HTMLElement} */ ($('cfg-avancado').lastChild).append(
-    el('p', { className: 'dica', textContent: somenteLeitura.dadosFixo
-      ? `A pasta de dados foi fixada por --dados (${somenteLeitura.dadosFixo}); o HD acima não é usado.`
-      : 'O HD precisa estar conectado ao aplicar. Nada é gravado fora de <HD>/tse<ano>.' }),
     el('dl', { className: 'leitura' },
       el('dt', { textContent: 'Fonte (oficial do TSE)' }), el('dd', {}, el('code', { textContent: `${somenteLeitura.base}/${somenteLeitura.ambiente}` })),
       el('dt', { textContent: 'Porta do painel' }), el('dd', { textContent: `${somenteLeitura.porta} — mudar a porta exige reiniciar: node src/cli.ts painel --porta N` })));
@@ -369,7 +366,7 @@ const marcados = (name) => [.../** @type {NodeListOf<HTMLInputElement>} */ ($('f
 /** @returns {FormConfig} */
 function lerFormulario() {
   /** @type {FormConfig} */
-  const config = { pleitos: marcados('pleito'), ufs: marcados('uf'), concorrencia: Number($('cfg-concorrencia').value), http: {} };
+  const config = { pleitos: marcados('pleito'), ufs: marcados('uf'), concorrencia: Number($('cfg-concorrencia').value), hd: $('cfg-hd').value.trim(), http: {} };
   for (const entrada of /** @type {NodeListOf<HTMLInputElement>} */ ($('cfg-avancado').querySelectorAll('[data-campo]'))) {
     const valor = entrada.type === 'checkbox' ? entrada.checked : entrada.type === 'number' ? Number(entrada.value) : entrada.value;
     const partes = /** @type {string} */ (entrada.dataset.campo).split('.');
@@ -397,11 +394,133 @@ function problemaNaConfig(config) {
   if (config.http.esperaMaxMs < config.http.esperaBaseMs) return 'a espera máxima não pode ser menor que a inicial';
   const ua = config.http.userAgent.trim();
   if (!ua || ua.length > 200 || !/^[\x20-\x7e]+$/.test(ua)) return 'o User-Agent precisa ter de 1 a 200 caracteres ASCII visíveis (sem acentos)';
-  if (!config.hd.trim().startsWith('/')) return 'o caminho do HD precisa ser absoluto (começar com /)';
+  if (!ABSOLUTO.test(config.hd.trim())) return 'a pasta onde salvar precisa ser um caminho completo (ex.: /media/usuario/HD ou D:\\Dados)';
   return null;
 }
 
 $('cfg-concorrencia').addEventListener('input', avisarConcorrencia);
+
+// ---- pasta onde salvar ----
+const ABSOLUTO = /^(\/|[A-Za-z]:[\\/]|\\\\)/;
+/** @typedef {{ caminho: string, pai: string | null, pastas: string[], truncado: boolean, livreBytes: number | null, gravavel: boolean,
+ *   atalhos: { rotulo: string, caminho: string }[] }} ListaPastas */
+const separador = (/** @type {string} */ c) => (/^[A-Za-z]:|\\/.test(c) && !c.startsWith('/') ? '\\' : '/');
+const juntar = (/** @type {string} */ a, /** @type {string} */ b) => (a.endsWith('/') || a.endsWith('\\') ? a + b : a + separador(a) + b);
+const semBarraFinal = (/** @type {string} */ c) => (c.length > 1 && !/^[A-Za-z]:[\\/]$/.test(c) ? c.replace(/[\\/]+$/, '') : c);
+// Ano do ciclo dos pleitos marcados (ele2026 → 2026), para mostrar o destino <pasta>/tse<ano>.
+function anoMarcado() {
+  const cd = marcados('pleito')[0] ?? cfg?.atual?.pleitos[0];
+  const ciclo = cfg?.disponiveis.pleitos.find((p) => p.cd === cd)?.ciclo ?? cfg?.atual?.ciclo ?? '';
+  return /^ele(\d{4})$/.exec(ciclo)?.[1] ?? '<ano>';
+}
+let consultaPasta = 0;
+// Destino, espaço livre e aviso de troca de pasta, a cada mudança do campo (consulta ao servidor com atraso curto).
+function atualizarPasta() {
+  if (!cfg) return;
+  const fixo = cfg.somenteLeitura.dadosFixo;
+  $('cfg-hd').disabled = $('cfg-hd-escolher').disabled = !!fixo;
+  const hd = $('cfg-hd').value.trim();
+  const alerta = $('cfg-hd-alerta');
+  if (fixo) {
+    $('cfg-hd-dica').textContent = `A pasta de dados foi fixada ao abrir o painel (--dados ${fixo}); este campo não é usado.`;
+    alerta.hidden = true;
+    return;
+  }
+  const atual = cfg.atual?.hd;
+  const mudou = !!atual && semBarraFinal(hd) !== semBarraFinal(atual);
+  alerta.hidden = !mudou;
+  alerta.textContent = mudou
+    ? `Trocar a pasta não move o que já foi baixado (em ${cfg.atual?.dados ?? atual}). Na nova pasta, a coleta recomeça do zero, e os arquivos antigos continuam onde estão. Para levar tudo junto, feche o painel, mova a pasta tse${anoMarcado()} inteira para o novo lugar e depois aplique.`
+    : '';
+  if (!ABSOLUTO.test(hd)) {
+    $('cfg-hd-dica').textContent = 'Informe um caminho completo, por exemplo /media/usuario/HD (Linux) ou D:\\Dados (Windows), ou clique em Escolher…';
+    return;
+  }
+  const destino = juntar(semBarraFinal(hd), `tse${anoMarcado()}`);
+  $('cfg-hd-dica').textContent = `Os arquivos ficam em ${destino}; nada é gravado fora dela.`;
+  const n = ++consultaPasta;
+  setTimeout(async () => {
+    if (n !== consultaPasta) return;
+    try {
+      const l = /** @type {ListaPastas} */ (await obterJson(`/api/pastas?caminho=${encodeURIComponent(hd)}`));
+      if (n !== consultaPasta) return;
+      const extra = [l.livreBytes != null ? `livre: ${fmtBytes(l.livreBytes)}` : '', l.gravavel ? '' : 'sem permissão de escrita nesta pasta'].filter(Boolean).join(' · ');
+      $('cfg-hd-dica').textContent = `Os arquivos ficam em ${destino}; nada é gravado fora dela.${extra ? ` (${extra})` : ''}`;
+    } catch (err) {
+      if (n !== consultaPasta) return;
+      $('cfg-hd-dica').textContent = `${/** @type {Error} */ (err).message}. O HD está conectado? A pasta precisa existir ao aplicar.`;
+    }
+  }, 300);
+}
+$('cfg-hd').addEventListener('input', atualizarPasta);
+$('cfg-pleitos').addEventListener('change', atualizarPasta);
+
+/** @type {ListaPastas | null} */
+let pastaAberta = null;
+/** @param {string | null} [caminho] */
+async function navegarPasta(caminho) {
+  $('pasta-msg').textContent = '';
+  try {
+    const l = /** @type {ListaPastas} */ (await obterJson(`/api/pastas${caminho ? `?caminho=${encodeURIComponent(caminho)}` : ''}`));
+    mostrarPasta(l);
+  } catch (err) {
+    $('pasta-msg').textContent = /** @type {Error} */ (err).message;
+    if (!pastaAberta && caminho) await navegarPasta(null); // caminho do campo não existe: abre na pasta pessoal
+  }
+}
+/** @param {ListaPastas} l */
+function mostrarPasta(l) {
+  pastaAberta = l;
+  $('pasta-caminho').textContent = l.caminho;
+  $('pasta-subir').disabled = !l.pai;
+  $('pasta-info').textContent = [l.livreBytes != null ? `livre: ${fmtBytes(l.livreBytes)}` : '', l.gravavel ? '' : 'sem permissão de escrita aqui',
+    l.truncado ? 'mostrando as primeiras 500 pastas' : ''].filter(Boolean).join(' · ');
+  $('pasta-atalhos').replaceChildren(...l.atalhos.map((a) => {
+    const b = el('button', { type: 'button', className: 'chip', textContent: a.rotulo, title: a.caminho });
+    b.setAttribute('aria-pressed', String(a.caminho === l.caminho));
+    b.addEventListener('click', () => navegarPasta(a.caminho));
+    return b;
+  }));
+  $('pasta-lista').replaceChildren(...(l.pastas.length
+    ? l.pastas.map((nome) => {
+      const b = el('button', { type: 'button', textContent: `📁 ${nome}` });
+      b.addEventListener('click', () => navegarPasta(juntar(l.caminho, nome)));
+      return el('li', {}, b);
+    })
+    : [el('li', { className: 'vazia', textContent: 'nenhuma subpasta' })]));
+  /** @type {HTMLButtonElement} */ ($('pasta-usar')).disabled = !l.gravavel;
+}
+$('cfg-hd-escolher').addEventListener('click', () => {
+  pastaAberta = null;
+  $('pasta-nova').value = '';
+  $('pasta-modal').showModal();
+  const hd = $('cfg-hd').value.trim();
+  navegarPasta(ABSOLUTO.test(hd) ? hd : null);
+});
+$('pasta-subir').addEventListener('click', () => { if (pastaAberta?.pai) navegarPasta(pastaAberta.pai); });
+$('pasta-criar').addEventListener('click', async () => {
+  if (!pastaAberta) return;
+  const nome = $('pasta-nova').value.trim();
+  if (!nome) return void ($('pasta-msg').textContent = 'digite o nome da nova pasta');
+  try {
+    mostrarPasta(/** @type {ListaPastas} */ (await obterJson('/api/pastas', {
+      method: 'POST', headers: { 'x-tse-auditor': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ caminho: pastaAberta.caminho, nome }),
+    })));
+    $('pasta-nova').value = '';
+    $('pasta-msg').textContent = 'pasta criada';
+  } catch (err) {
+    $('pasta-msg').textContent = /** @type {Error} */ (err).message;
+  }
+});
+$('pasta-usar').addEventListener('click', () => {
+  if (!pastaAberta) return;
+  $('cfg-hd').value = pastaAberta.caminho;
+  $('pasta-modal').close();
+  atualizarPasta();
+  mensagemConfig('pasta escolhida; clique em Aplicar para valer');
+});
+for (const id of ['pasta-fechar', 'pasta-cancelar']) $(id).addEventListener('click', () => $('pasta-modal').close());
 $('ufs-todas').addEventListener('click', () => {
   for (const i of $('cfg-ufs').querySelectorAll('input')) i.checked = true;
 });

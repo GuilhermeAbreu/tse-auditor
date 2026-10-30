@@ -199,3 +199,17 @@ test('preferências: começa sem resposta, salva só booleano e exige o cabeçal
   assert.equal((await enviar({ iniciarAoLigar: true })).status, 200);
   assert.deepEqual(await (await fetch(`${base}/api/preferencias`)).json(), { iniciarAoLigar: true, servico: true });
 });
+
+test('pastas: lista, cria com cabeçalho e devolve 400 para caminho inválido', async (t) => {
+  const raiz = await mkdtemp(path.join(os.tmpdir(), 'tse-pastas-srv-'));
+  const base = await subir(t, { obterEstado: async () => ({}) });
+  const l = await (await fetch(`${base}/api/pastas?caminho=${encodeURIComponent(raiz)}`)).json() as { caminho: string; pastas: string[] };
+  assert.deepEqual([l.caminho, l.pastas], [raiz, []]);
+  assert.equal((await fetch(`${base}/api/pastas?caminho=relativo`)).status, 400);
+  const criar = (headers: Record<string, string>) => fetch(`${base}/api/pastas`, { method: 'POST', headers, body: JSON.stringify({ caminho: raiz, nome: 'nova' }) });
+  assert.equal((await criar({ 'content-type': 'application/json' })).status, 403);
+  const r = await criar(HJ);
+  assert.equal(r.status, 200);
+  assert.equal(((await r.json()) as { caminho: string }).caminho, path.join(raiz, 'nova'));
+  assert.equal((await criar(HJ)).status, 400);
+});

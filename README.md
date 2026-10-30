@@ -88,6 +88,7 @@ Nada é fixo no código para um ano específico: eleições, turnos e caminhos d
 
 **Configuração**
 - Pleitos (agrupados por ano), UFs, número de conexões simultâneas ao TSE.
+- **Pasta onde salvar os arquivos**: digite o caminho ou clique em **Escolher…** para navegar pelas pastas (atalhos para a pasta pessoal e para os HDs e pendrives montados, espaço livre de cada local e criação de pasta nova). O painel mostra o destino final (`<pasta>/tse<ano>`) e avisa que trocar de pasta não move o que já foi baixado.
 - Seção **Avançado** com todos os demais parâmetros (veja [Configuração](#configuração)).
 
 **Análise › Visão geral** (gráficos com Apache ECharts, servido localmente a partir de `node_modules`, sem CDN)
@@ -150,14 +151,14 @@ Tudo pode ser ajustado pelo painel; a última configuração aplicada fica em `~
 | Espaço livre mínimo | 20 GB | Abaixo disso a coleta para. |
 | Gravação do manifest | 1 s | Intervalo de confirmação das gravações em lote. |
 | Atualização do painel | 2 s | |
-| Pasta do HD | `/media/guilherme/Novo volume` | Ou variável `TSE_HD`. |
+| Pasta onde salvar | `/media/guilherme/Novo volume` | Pasta raiz; os dados ficam em `<pasta>/tse<ano>`. Precisa existir ao aplicar. Padrão também pela variável `TSE_HD`. Trocar não move os dados já baixados: a coleta recomeça na nova pasta. |
 | Analisar ao concluir | ligado | Extrai e analisa a UF assim que a coleta dela termina. |
 
 A fonte de dados (`https://resultados.tse.jus.br`) não é editável pelo painel: só fontes oficiais são aceitas.
 
 ## Onde ficam os dados
 
-Tudo fica numa pasta por ano dentro do HD configurado; nada fora dela é tocado.
+Tudo fica numa pasta por ano dentro da pasta escolhida no painel (aqui chamada `<HD>`); nada fora dela é tocado.
 
 ```text
 <HD>/tse2026/
