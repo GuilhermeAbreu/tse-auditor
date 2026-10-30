@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { setTimeout as espera } from 'node:timers/promises';
 import { access, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { HttpError } from '../net/http.ts';
@@ -32,6 +33,7 @@ export interface OpcoesColetor {
   agora?: () => number;
   limiteFalhasRede?: number;
   tentativasVerificacao?: number;
+  esperaSegundaPassadaMs?: number | null; // pausa antes de tentar de novo as seções com erro da UF (padrão 30 s; null desliga)
 }
 
 export { TIPOS_OPCIONAIS };
@@ -114,14 +116,16 @@ export class Coletor extends EventEmitter {
   declare agora: () => number;
   declare limiteFalhasRede: number;
   declare tentativasVerificacao: number;
+  declare esperaSegundaPassadaMs: number | null;
   estado: EstadoColeta;
 
   constructor({
     manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes,
     concorrencia = 4, bytesLivres = bytesLivresDoDisco, agora = Date.now, limiteFalhasRede = 20, tentativasVerificacao = 3,
+    esperaSegundaPassadaMs = 30_000,
   }: OpcoesColetor) {
     super();
-    Object.assign(this, { manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes, concorrencia, bytesLivres, agora, limiteFalhasRede, tentativasVerificacao });
+    Object.assign(this, { manifest, http, urls, pastaDados, ciclo, pleitos, ufs, minLivreBytes, concorrencia, bytesLivres, agora, limiteFalhasRede, tentativasVerificacao, esperaSegundaPassadaMs });
     this.estado = { rodando: false, ufAtual: null, municipioAtual: null, motivoParada: null };
   }
 
@@ -387,7 +391,8 @@ export class Coletor extends EventEmitter {
     return this.#parar || this.manifest.ufPausada(uf);
   }
 
-  // Município por município, os dois turnos juntos.
+  // Município por município, os dois turnos juntos. No fim, se sobrou seção com erro (falha momentânea do servidor,
+  // por exemplo), espera um pouco e passa mais uma vez só pelos municípios com erro.
   async #coletarUf(uf: string): Promise<void> {
     this.estado.ufAtual = uf;
     this.emit('mudou');
@@ -396,6 +401,19 @@ export class Coletor extends EventEmitter {
         if (this.#deveParar(uf)) return;
         await this.#coletarMunicipio(pleito, uf, mun);
       }
+    }
+    if (this.esperaSegundaPassadaMs == null) return;
+    const comErro = this.manifest.municipiosComErro(uf).filter((m) => this.pleitos.includes(m.pleito));
+    if (!comErro.length) return;
+    this.manifest.registrarEvento('info', uf, `${uf.toUpperCase()}: tentando de novo as seções com erro em ${comErro.length} município(s)`);
+    const fim = Date.now() + this.esperaSegundaPassadaMs; // espera curta e interrompível
+    while (Date.now() < fim) {
+      if (this.#deveParar(uf)) return;
+      await espera(Math.min(1000, fim - Date.now()));
+    }
+    for (const { pleito, mun } of comErro) {
+      if (this.#deveParar(uf)) return;
+      await this.#coletarMunicipio(pleito, uf, mun);
     }
   }
 

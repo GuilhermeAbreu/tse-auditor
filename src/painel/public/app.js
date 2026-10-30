@@ -95,12 +95,16 @@ function fmtBytes(b) {
 function linhaUf(u) {
   const feitas = u.concluidas + u.erros;
   const pct = u.total ? Math.floor((feitas / u.total) * 100) : 0;
-  const acao = u.pausada ? 'iniciar' : 'pausar';
+  // UF que terminou com seções em erro: "Tentar de novo" a põe de volta na fila (rota de retomar), logo após a UF atual.
+  const refazer = !u.pausada && u.status === 'baixado_com_erros';
+  const acao = u.pausada || refazer ? 'iniciar' : 'pausar';
   const dica = [`${num(u.erros)} com erro`, `${num(u.semArquivos)} sem dados`,
     `${num(u.indisponiveis ?? 0)} não publicados (listados no índice do TSE, mas ausentes; não afetam a análise)`,
     `${fmtBytes(u.bytes)} baixados`].join('\n');
-  const botao = el('button', { type: 'button', className: 'pequeno', textContent: u.pausada ? 'Retomar' : 'Pausar',
-    title: u.pausada ? 'retoma a coleta (todas as UFs não pausadas)' : 'pausa esta UF' });
+  const botao = el('button', { type: 'button', className: 'pequeno', textContent: u.pausada ? 'Retomar' : refazer ? 'Tentar de novo' : 'Pausar',
+    title: u.pausada ? 'retoma a coleta (todas as UFs não pausadas)'
+      : refazer ? `baixa de novo as ${num(u.erros)} seções com erro desta UF: entra na fila logo após a UF que está baixando (com a coleta parada, inicia a coleta)`
+      : 'pausa esta UF' });
   botao.dataset.uf = u.uf;
   botao.dataset.acao = acao;
   const extras = [el('span', { textContent: `${fmtBytes(u.bytes)} · ${num(u.semArquivos)} sem dados` })];

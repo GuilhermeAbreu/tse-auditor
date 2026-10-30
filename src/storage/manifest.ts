@@ -118,6 +118,7 @@ export class Manifest {
       secoesPendentes: p(`SELECT pleito, uf, mun, zona, secao FROM secoes
                           WHERE pleito = ? AND uf = ? AND mun = ? AND status IN ('pendente', 'erro')
                           ORDER BY zona, secao`),
+      municipiosComErro: p(`SELECT DISTINCT pleito, mun FROM secoes WHERE uf = ? AND status = 'erro' ORDER BY mun, pleito`),
       secao: p(`SELECT * FROM secoes WHERE ${ONDE_SECAO}`),
       arquivo: p(`SELECT * FROM arquivos WHERE ${ONDE_SECAO} AND hash = @hash AND nome = @nome`),
       arquivosOkDoMunicipio: p(`SELECT zona, secao, hash, nome, bytes, sha512 FROM arquivos
@@ -275,6 +276,11 @@ export class Manifest {
 
   secoesPendentes(pleito: string, uf: string, mun: string): SecaoChave[] {
     return this.#st.secoesPendentes!.all(pleito, uf, mun) as SecaoChave[];
+  }
+
+  // Municípios (por pleito) da UF que ainda têm seção com erro: a segunda passada do coletor.
+  municipiosComErro(uf: string): { pleito: string; mun: string }[] {
+    return this.#st.municipiosComErro!.all(uf) as { pleito: string; mun: string }[];
   }
 
   secao(s: SecaoChave): SecaoLinha | undefined {

@@ -119,6 +119,7 @@ Nada é fixo no código para um ano específico: eleições, turnos e caminhos d
 - Status por UF (aguardando, baixando, pausada, baixado, baixado com erros), seções concluídas, erros, arquivos não publicados pelo TSE e volume baixado.
 - Velocidade, espaço livre no HD e projeção do tamanho total.
 - Botões para iniciar e parar a coleta e para pausar ou retomar cada UF.
+- Seções com erro são tentadas de novo automaticamente: ao fim de cada UF, depois de 30 s, uma segunda passada só pelos municípios com erro. Se ainda sobrar erro, o botão **Tentar de novo** da UF a põe de volta na fila, logo depois da UF que está baixando.
 - Erros agrupados por causa, com as seções de exemplo.
 
 **Configuração**

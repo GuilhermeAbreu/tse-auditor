@@ -25,11 +25,12 @@ interface OpcoesMontar {
   envolverHttp?: (http: ClienteHttp) => ClienteHttp;
   limiteFalhasRede?: number;
   tentativasVerificacao?: number;
+  segundaPassada?: boolean; // desligada por padrão: os testes antigos contam uma passada por execução
 }
 
 const S77 = FX.secao('3220');
 
-async function montar(t: TestContext, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados, envolverHttp, limiteFalhasRede, tentativasVerificacao }: OpcoesMontar = {}) {
+async function montar(t: TestContext, { falhas, bytesLivres, ufs = ['ac'], pleitos = ['3220', '3221'], subpastaDados, envolverHttp, limiteFalhasRede, tentativasVerificacao, segundaPassada = false }: OpcoesMontar = {}) {
   const fake = await iniciarFakeTse({ falhas });
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tse-coletor-'));
   const dados = subpastaDados ? path.join(dir, subpastaDados) : dir;
@@ -48,6 +49,7 @@ async function montar(t: TestContext, { falhas, bytesLivres, ufs = ['ac'], pleit
     ufs,
     minLivreBytes: 1,
     bytesLivres: bytesLivres ?? (async () => 10 ** 12),
+    esperaSegundaPassadaMs: segundaPassada ? 0 : null,
   });
   t.after(async () => {
     await coletor.aguardar();
@@ -203,6 +205,15 @@ test('segunda execução só retenta o que falhou', async (t) => {
   assert.deepEqual(fake.requisicoes.slice(antes), [
     '/oficial/ele2026/arquivo-urna/3220/dados/ac/01066/0004/0078/p003220-ac-m01066-z0004-s0078-aux.json',
   ]);
+});
+
+test('seção com erro momentâneo é refeita na segunda passada da mesma execução', async (t) => {
+  const indice = 'p003220-ac-m01066-z0004-s0077-aux.json';
+  const { fake, manifest, coletor } = await montar(t, { falhas: { [indice]: [503, 503] }, segundaPassada: true }); // as 2 tentativas do cliente
+  await coletor.executar();
+  assert.equal(manifest.secao(S77)!.status, 'completa');
+  assert.equal(fake.requisicoes.filter((r) => r.endsWith(indice)).length, 3);
+  assert.ok(manifest.eventos(20).some((e) => /tentando de novo as seções com erro/.test(e.msg)));
 });
 
 test('arquivo que falhou numa execução entra no zip na seguinte', async (t) => {
