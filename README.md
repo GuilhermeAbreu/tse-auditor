@@ -70,7 +70,17 @@ Nada é fixo no código para um ano específico: eleições, turnos e caminhos d
 - Pleitos (agrupados por ano), UFs, número de conexões simultâneas ao TSE.
 - Seção **Avançado** com todos os demais parâmetros (veja [Configuração](#configuração)).
 
-**Análise**
+**Análise › Visão geral** (gráficos com Apache ECharts, servido localmente a partir de `node_modules`, sem CDN)
+- Escopo: Brasil (todas as UFs já extraídas), uma ou mais UFs, ou uma zona (com uma UF). A linha de cobertura diz quais UFs e quantas seções entram.
+- Indicadores por turno com a variação: comparecimento, abstenção, liberação pelo mesário e biometria.
+- Mapa do Brasil: candidato a presidente mais votado por UF (intensidade = margem sobre o 2º colocado), 1º ou 2º turno; UFs sem dados em cinza.
+- 1º × 2º turno: votos ou % de cada candidato, brancos e nulos. Comparar UFs: % por candidato, abstenção e mesário por UF.
+- Zonas e seções: % do candidato no 1º (x) × 2º turno (y), com a diagonal de referência e as seções com achados em destaque; clicar numa seção abre o detalhe. Até 20 000 seções (as de maior pontuação primeiro).
+- Histograma da liberação pelo mesário por seção (faixas de 2 p.p.), 1º × 2º turno.
+- Nomes e partidos dos candidatos vêm do arquivo oficial de resultados do TSE (`br-c0001-e<eleição>-u.json`), guardados em `~/.cache/tse-auditor/`; sem acesso, aparece "Candidato <número>".
+- Votos de presidente sempre pelo BU; % de candidato sobre os votos válidos (nominais), exceto no gráfico 1º × 2º turno (sobre o comparecimento).
+
+**Análise › Ranking**
 - Glossário dos sinais e das explicações candidatas.
 - Ranking de seções destoantes por UF, com filtro por sinal.
 - Ao clicar numa seção, um painel mostra: por que ela apareceu (em linguagem comum), a comparação entre os turnos (eleitores, forma de habilitação, votos para presidente) e a linha do tempo dos votos ao longo do dia.
@@ -198,7 +208,7 @@ src/
 ├── coleta/                 coletor, controle e opções da coleta, estado do painel
 ├── extracao/               leitor BER, decodificadores de BU, RDV e log, gravação em Parquet
 ├── cruzamentos/            limites, turnos, mesário e horários (SQL em DuckDB)
-├── painel/                 servidor HTTP, API de análise e página web
+├── painel/                 servidor HTTP, API de análise e dos gráficos (graficos.ts) e página web
 └── tipos/                  tipos do domínio e dos formatos do TSE
 docs/
 ├── specs/                  desenho do sistema
@@ -228,3 +238,8 @@ Somente fontes oficiais do Tribunal Superior Eleitoral:
 
 - Arquivos de urna e configurações: `https://resultados.tse.jus.br`
 - Especificação dos formatos de BU, RDV, assinatura e log: documentação técnica do software da urna eletrônica, publicada pelo TSE (cópia em `docs/tse/`).
+- Nomes e partidos dos candidatos a presidente: `https://resultados.tse.jus.br/oficial/<ciclo>/<eleição>/dados/br/br-c0001-e<eleição>-u.json` (template `u` do `ele-c.json`).
+
+Para o mapa do painel (não é dado eleitoral):
+
+- Malha das UFs: IBGE, API de malhas v3 (`https://servicodados.ibge.gov.br/api/v3/malhas/paises/BR?formato=application/vnd.geo+json&intrarregiao=UF&qualidade=minima`), com o código IBGE convertido em sigla pela API de localidades (`/api/v1/localidades/estados`). Baixada em 30/10/2026 e gravada em `src/painel/public/mapa-br.json` (~100 KB, sem simplificação).

@@ -1,6 +1,9 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { detalharSecao, FilaAnalise, listarUfs, ranking, turnosPelasEleicoes } from './analise.ts';
+import { comparativo, distribuicao, dispersao, mapa, nomesCandidatos, ParametroInvalido, ufsComparacao } from './graficos.ts';
+import { PADRAO } from '../config.ts';
 import { UFS } from '../ufs.ts';
 import type { AddressInfo } from 'node:net';
 import type { ControleColeta } from '../coleta/controle.ts';
@@ -18,6 +21,11 @@ const ESTATICOS: Record<string, [string, string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/estilo.css': ['estilo.css', 'text/css; charset=utf-8'],
+  '/mapa-br.json': ['mapa-br.json', 'application/json; charset=utf-8'],
+};
+// Bibliotecas servidas de node_modules (sem CDN).
+const VENDOR: Record<string, [string, string]> = {
+  '/vendor/echarts.min.js': [createRequire(import.meta.url).resolve('echarts/dist/echarts.min.js'), 'text/javascript; charset=utf-8'],
 };
 
 function json(res: Res, status: number, corpo: unknown): void {
@@ -134,6 +142,12 @@ export function criarPainel({ controle, fila = new FilaAnalise({ turnosDe: turno
         res.end(corpo);
         return;
       }
+      if (req.method === 'GET' && VENDOR[pathname]) {
+        const [arquivo, tipo] = VENDOR[pathname];
+        res.writeHead(200, { 'content-type': tipo, 'cache-control': 'max-age=86400' });
+        res.end(await readFile(arquivo));
+        return;
+      }
       if (req.method === 'GET' && pathname === '/api/estado') return json(res, 200, await obterEstado());
       if (req.method === 'GET' && pathname === '/api/eventos') return sse(req, res, obterEstado, intervaloMs);
       if (req.method === 'GET' && pathname === '/api/config') {
@@ -177,6 +191,26 @@ export function criarPainel({ controle, fila = new FilaAnalise({ turnosDe: turno
     const pasta = dados();
     if (!pasta) return json(res, 409, { erro: 'sem configuração' });
     if (req.method === 'GET' && pathname === '/api/analise/ufs') return json(res, 200, { ufs: await listarUfs(pasta) });
+    const g = /^\/api\/analise\/(comparativo|ufs-comparacao|dispersao|distribuicao|mapa|candidatos)$/.exec(pathname)?.[1];
+    if (g) {
+      if (req.method !== 'GET') return json(res, 405, { erro: 'método não permitido' });
+      const ufs = (q.get('ufs') ?? '').toLowerCase().split(',').map((u) => u.trim()).filter(Boolean);
+      const el = controle.eleicoes;
+      try {
+        if (g === 'comparativo') return json(res, 200, await comparativo(pasta, { escopo: q.get('escopo'), ufs, zona: q.get('zona'), mun: q.get('mun') }, el));
+        if (g === 'ufs-comparacao') return json(res, 200, await ufsComparacao(pasta, { ufs }, el));
+        if (g === 'dispersao') {
+          return json(res, 200, await dispersao(pasta, { uf: (q.get('uf') ?? '').toLowerCase(), nivel: q.get('nivel') ?? 'zona', candidato: q.get('candidato') }, el));
+        }
+        if (g === 'distribuicao') return json(res, 200, await distribuicao(pasta, { ufs, metrica: q.get('metrica') ?? 'mesario' }, el));
+        if (g === 'mapa') return json(res, 200, await mapa(pasta, { turno: q.get('turno') ?? 1 }, el));
+        const c = controle as Partial<{ base: string; ambiente: string }>;
+        return json(res, 200, await nomesCandidatos(el, { base: c.base ?? PADRAO.base, ambiente: c.ambiente ?? PADRAO.ambiente }));
+      } catch (err) {
+        if (err instanceof ParametroInvalido) return json(res, 400, { erro: err.message });
+        throw err;
+      }
+    }
     const m = /^\/api\/analise\/([a-z]{2})\/(ranking|executar|secao\/(\d{1,6})\/(\d{1,6})\/(\d{1,6}))$/.exec(pathname);
     if (!m || !UFS.includes(m[1]!)) return json(res, 404, { erro: 'não encontrado' });
     const [, uf, acao, mun, zona, secao] = m as unknown as [string, string, string, string, string, string];

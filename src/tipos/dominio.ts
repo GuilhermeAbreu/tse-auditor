@@ -67,6 +67,7 @@ export interface Pleito {
 export interface Templates {
   cs: string;
   aux: string;
+  u?: string; // resultados por UF/abrangência (traz nomes e partidos dos candidatos)
 }
 
 export interface Eleicoes {

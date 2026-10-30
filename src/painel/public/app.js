@@ -5,7 +5,7 @@
  * @typedef {{
  *   'btn-iniciar': HTMLButtonElement, 'btn-parar': HTMLButtonElement,
  *   'cfg-concorrencia': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLInputElement,
- *   'an-sinal': HTMLSelectElement, 'an-modal': HTMLDialogElement, 'gl-modal': HTMLDialogElement, 'an-ranking': HTMLTableElement,
+ *   'an-sinal': HTMLSelectElement, 'vg-zona': HTMLSelectElement, 'vg-disp-uf': HTMLSelectElement, 'vg-disp-cand': HTMLSelectElement, 'an-modal': HTMLDialogElement, 'gl-modal': HTMLDialogElement, 'an-ranking': HTMLTableElement,
  * }} Ids
  */
 
@@ -818,3 +818,506 @@ atualizarAnalise();
 setInterval(atualizarAnalise, 3000);
 
 desenharGlossario();
+
+// ---- análise › visão geral: gráficos (Apache ECharts servido em /vendor/echarts.min.js) ----
+
+/**
+ * @typedef {{ numero: number, votos: number, pct: number | null }} CandidatoTotal
+ * @typedef {{ turno: number, pleito: number, secoes: number, aptos: number, comparecimento: number, abstencao: number,
+ *   biometria: number, mesario: number, anoNascimento: number, validos: number, brancos: number, nulos: number,
+ *   candidatos: CandidatoTotal[] }} TotaisTurno
+ * @typedef {{ escopo: string, ufs: string[], zona: string | null, turnos: TotaisTurno[], zonas: string[],
+ *   cobertura: { ufs: string[], semDados: string[], secoes: { turno: number, secoes: number }[] } }} Comparativo
+ * @typedef {{ ufs: { uf: string, destoantes: number | null, turnos: { turno: number, abstencaoPct: number | null,
+ *   mesarioPct: number | null, validos: number, secoes: number, candidatos: CandidatoTotal[] }[] }[] }} UfsComparacao
+ * @typedef {{ id: string, pct1: number, pct2: number, comparecimento1: number, comparecimento2: number,
+ *   destoantes: number, destoante: boolean, pontuacao: number | null }} Ponto
+ * @typedef {{ uf: string, nivel: string, candidato: number | null, candidatos: number[], pontos: Ponto[], total: number, truncado: boolean }} Dispersao
+ * @typedef {{ larguraPct: number, bins: { de: number, ate: number }[], turnos: { turno: number, contagens: number[], secoes: number }[] }} Distribuicao
+ * @typedef {{ uf: string, coletado: boolean, secoes?: number, candidatos: CandidatoTotal[], validos: number, brancos: number,
+ *   nulos: number, vencedor: number | null, margem: number | null }} UfMapa
+ * @typedef {{ turno: number, pleito: number | null, ufs: UfMapa[] }} Mapa
+ */
+
+const vg = {
+  /** @type {string[]} UFs do escopo; vazio = Brasil */ ufs: [],
+  zona: '',
+  mapaTurno: 2,
+  ufsTurno: 2,
+  turnosUn: 'pct',
+  nivel: 'zona',
+  dispUf: '',
+  dispCand: '',
+  /** @type {string[]} */ disponiveis: [],
+  /** @type {Record<string, { nome: string, partido: string }>} */ nomes: {},
+  /** @type {Map<number, string>} */ cores: new Map(),
+  mapaPronto: false,
+  nomesCarregados: false,
+  assinatura: '',
+  /** @type {{ comp?: Comparativo, ufsComp?: UfsComparacao | null, hist?: Distribuicao, mapa?: Mapa, disp?: Dispersao | null }} */
+  dados: {},
+};
+// Paleta categórica dos candidatos (mesma cor em todos os gráficos, pela ordem de votos no 1º turno do Brasil coletado).
+const PALETA = ['#2f81f7', '#e5534b', '#2da44e', '#a371f7', '#d29922', '#1b9aaa', '#e85aad', '#8c6d46', '#57ab5a', '#c96198', '#4c6ef5', '#b08800'];
+const COR_BRANCO = '#9ea7b3';
+const COR_NULO = '#6e7781';
+const COR_OUTROS = '#768390';
+const MAX_CAND = 6;
+
+const temEcharts = () => typeof echarts !== 'undefined';
+/** @param {number} n */
+const corDe = (n) => {
+  if (!vg.cores.has(n)) vg.cores.set(n, PALETA[vg.cores.size % PALETA.length] ?? COR_OUTROS);
+  return /** @type {string} */ (vg.cores.get(n));
+};
+/** @param {number} n */
+const nomeCand = (n) => vg.nomes[String(n)]?.nome ?? `Candidato ${n}`;
+/** @param {number} n */
+const nomeCompleto = (n) => (vg.nomes[String(n)] ? `${vg.nomes[String(n)]?.nome} (${vg.nomes[String(n)]?.partido}, ${n})` : `Candidato ${n}`);
+/** @param {number | null | undefined} v @param {number} [casas] */
+const fmtPct = (v, casas = 1) => (v == null || !Number.isFinite(v) ? '—'
+  : `${(v * 100).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas })}%`);
+/** @param {number} v diferença em fração */
+const fmtPP = (v) => `${v > 0 ? '+' : v < 0 ? '−' : '±'}${Math.abs(v * 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} p.p.`;
+/** @param {string} hex @param {number} a */
+const rgba = (hex, a) => {
+  const h = hex.replace('#', '');
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+};
+
+// Cores do tema do painel (variáveis CSS), lidas a cada desenho para seguir o modo claro/escuro.
+function tema() {
+  const cs = getComputedStyle(document.documentElement);
+  /** @param {string} n */
+  const v = (n) => cs.getPropertyValue(n).trim();
+  return { texto: v('--texto'), suave: v('--suave'), borda: v('--borda'), sutil: v('--sutil'), cartao: v('--cartao'), ativo: v('--ativo'), aviso: v('--aviso'), erro: v('--erro') };
+}
+function base() {
+  const t = tema();
+  const eixo = { axisLine: { lineStyle: { color: t.borda } }, axisTick: { lineStyle: { color: t.borda } },
+    axisLabel: { color: t.suave }, splitLine: { lineStyle: { color: t.sutil } }, nameTextStyle: { color: t.suave } };
+  return {
+    t, eixo,
+    opcao: {
+      aria: { enabled: true },
+      backgroundColor: 'transparent',
+      textStyle: { color: t.texto, fontFamily: 'system-ui, sans-serif' },
+      tooltip: { backgroundColor: t.cartao, borderColor: t.borda, textStyle: { color: t.texto }, confine: true },
+      legend: { textStyle: { color: t.texto }, top: 0, type: 'scroll', pageTextStyle: { color: t.suave } },
+      grid: { left: 8, right: 16, top: 40, bottom: 8, containLabel: true },
+    },
+  };
+}
+
+/** @type {Map<string, echarts.ECharts>} */
+const graficos = new Map();
+// Cliques: UF no mapa entra/sai do escopo; seção na dispersão abre o detalhe.
+/** @type {Record<string, (p: { data?: any, name?: string }) => void>} */
+const CLIQUES = {
+  'g-mapa': (p) => {
+    const uf = String(p.name ?? '').toLowerCase();
+    if (!vg.disponiveis.includes(uf)) return;
+    recarregarEscopo(() => { vg.ufs = vg.ufs.includes(uf) ? vg.ufs.filter((u) => u !== uf) : [...vg.ufs, uf].sort(); vg.zona = ''; });
+  },
+  'g-dispersao': (p) => {
+    const v = p.data;
+    if (vg.nivel !== 'secao' || !Array.isArray(v)) return;
+    const [mun, zona, secao] = String(v[3]).split('/');
+    if (mun && zona && secao) abrirSecao(vg.dispUf, { mun, zona, secao, pontuacao: Number(v[5] ?? 0), sinais: [] });
+  },
+};
+/** @param {string} id */
+function grafico(id) {
+  let g = graficos.get(id);
+  if (!g) {
+    const alvo = $(id);
+    alvo.replaceChildren();
+    g = echarts.init(alvo, null, { renderer: 'canvas' });
+    graficos.set(id, g);
+    const inst = g;
+    new ResizeObserver(() => inst.resize()).observe(alvo);
+    const clique = CLIQUES[id];
+    if (clique) g.on('click', clique);
+  }
+  return g;
+}
+/** @param {string} id @param {string} msg */
+function vazio(id, msg) {
+  graficos.get(id)?.dispose();
+  graficos.delete(id);
+  $(id).replaceChildren(el('div', { className: 'vazio', textContent: msg }));
+}
+/** @param {string} id @param {Record<string, unknown>} opcao */
+const desenhar = (id, opcao) => grafico(id).setOption(opcao, true);
+
+const escopoQs = () => (vg.ufs.length ? `escopo=uf&ufs=${vg.ufs.join(',')}${vg.zona ? `&zona=${encodeURIComponent(vg.zona)}` : ''}` : 'escopo=brasil');
+const nomeEscopo = () => (vg.ufs.length ? vg.ufs.map((u) => u.toUpperCase()).join(', ') + (vg.zona ? ` · zona ${vg.zona}` : '') : 'Brasil (UFs coletadas)');
+
+function renderEscopo() {
+  $('vg-brasil').setAttribute('aria-pressed', String(!vg.ufs.length));
+  $('vg-ufs').replaceChildren(...vg.disponiveis.map((uf) => {
+    const b = el('button', { type: 'button', className: 'chip', textContent: uf.toUpperCase(), title: `incluir/retirar ${uf.toUpperCase()} do escopo` });
+    b.dataset.uf = uf;
+    b.setAttribute('aria-pressed', String(vg.ufs.includes(uf)));
+    return b;
+  }));
+  $('vg-zona-rotulo').hidden = vg.ufs.length !== 1;
+}
+
+// KPIs do escopo: comparecimento e abstenção (% dos aptos) e liberação pelo mesário (% do comparecimento), por turno.
+/** @param {Comparativo} c */
+function renderKpis(c) {
+  const [t1, t2] = c.turnos;
+  /** @param {string} rotulo @param {(t: TotaisTurno) => number | null} f @param {boolean} subirEhBom */
+  const cartao = (rotulo, f, subirEhBom) => {
+    const a = t1 ? f(t1) : null;
+    const b = t2 ? f(t2) : null;
+    const d = a != null && b != null ? b - a : null;
+    const delta = d == null ? null : el('span', { className: `delta ${Math.abs(d) < 0.0005 ? '' : (d > 0) === subirEhBom ? 'sobe' : 'desce'}`, textContent: fmtPP(d) });
+    return el('div', { className: 'cartao' }, el('span', { textContent: rotulo }),
+      el('strong', { textContent: fmtPct(b ?? a) }),
+      el('small', {}, `1º: ${fmtPct(a)} · 2º: ${fmtPct(b)}${delta ? ' · Δ ' : ''}`, ...(delta ? [delta] : [])));
+  };
+  /** @param {number} a @param {number} b */
+  const q = (a, b) => (b ? a / b : null);
+  $('vg-kpis').replaceChildren(
+    cartao('Comparecimento', (t) => q(t.comparecimento, t.aptos), true),
+    cartao('Abstenção', (t) => q(t.abstencao, t.aptos), false),
+    cartao('Liberação pelo mesário', (t) => q(t.mesario, t.comparecimento), false),
+    cartao('Biometria', (t) => q(t.biometria, t.comparecimento), true));
+}
+
+/** @param {Comparativo} c */
+function renderTurnos(c) {
+  if (!c.turnos.length) return vazio('g-turnos', 'sem dados para o escopo');
+  const [t1, t2] = c.turnos;
+  const ordem = [...(t1 ?? t2)?.candidatos ?? []].map((x) => x.numero);
+  for (const x of t2?.candidatos ?? []) if (!ordem.includes(x.numero)) ordem.push(x.numero);
+  const principais = ordem.slice(0, MAX_CAND);
+  const temOutros = ordem.length > MAX_CAND;
+  const cats = [...principais.map((n) => ({ chave: `c${n}`, rotulo: nomeCand(n), cor: corDe(n) })),
+    ...(temOutros ? [{ chave: 'outros', rotulo: 'Outros', cor: COR_OUTROS }] : []),
+    { chave: 'brancos', rotulo: 'Brancos', cor: COR_BRANCO }, { chave: 'nulos', rotulo: 'Nulos', cor: COR_NULO }];
+  /** @param {TotaisTurno | undefined} t @param {string} chave */
+  const votos = (t, chave) => {
+    if (!t) return null;
+    if (chave === 'brancos') return t.brancos;
+    if (chave === 'nulos') return t.nulos;
+    if (chave === 'outros') return t.candidatos.filter((x) => !principais.includes(x.numero)).reduce((a, x) => a + x.votos, 0);
+    return t.candidatos.find((x) => `c${x.numero}` === chave)?.votos ?? 0;
+  };
+  const pctMode = vg.turnosUn === 'pct';
+  /** @param {TotaisTurno | undefined} t @param {string} nome @param {number} opac */
+  const serie = (t, nome, opac) => ({
+    name: nome, type: 'bar', barGap: '10%', itemStyle: { color: rgba('#768390', opac) },
+    data: cats.map((k) => {
+      const v = votos(t, k.chave);
+      return { value: v == null ? null : pctMode ? (t?.comparecimento ? v / t.comparecimento : 0) : v, itemStyle: { color: rgba(k.cor, opac) } };
+    }),
+  });
+  const { opcao, eixo } = base();
+  desenhar('g-turnos', {
+    ...opcao,
+    grid: { ...opcao.grid, left: 40 },
+    tooltip: { ...opcao.tooltip, trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: (/** @type {any[]} */ ps) => `<b>${esc(ps[0]?.name)}</b><br>${ps.map((p) => {
+        const t = c.turnos[p.seriesIndex];
+        const v = votos(t, cats[p.dataIndex]?.chave ?? '');
+        return `${esc(p.seriesName)}: ${v == null ? '—' : `${num(v)} votos (${fmtPct(t?.comparecimento ? v / t.comparecimento : null)} do comparecimento)`}`;
+      }).join('<br>')}` },
+    xAxis: { type: 'category', data: cats.map((k) => k.rotulo), ...eixo, axisLabel: { ...eixo.axisLabel, interval: 0, rotate: cats.length > 6 ? 30 : 0, width: 110, overflow: 'truncate' } },
+    yAxis: { type: 'value', ...eixo, axisLabel: { ...eixo.axisLabel, formatter: (/** @type {number} */ v) => (pctMode ? fmtPct(v, 0) : num(v)) } },
+    series: [serie(t1, '1º turno', 0.45), ...(t2 ? [serie(t2, '2º turno', 1)] : [])],
+  });
+}
+
+/** @param {UfsComparacao | null | undefined} u */
+function renderUfs(u) {
+  if (!u || u.ufs.length < 2) return vazio('g-ufs', 'Escolha Brasil ou duas ou mais UFs para comparar.');
+  const turno = vg.ufsTurno;
+  const linhasT = u.ufs.map((x) => ({ uf: x.uf, destoantes: x.destoantes, t: x.turnos.find((y) => y.turno === turno) }));
+  /** @type {Map<number, number>} */
+  const soma = new Map();
+  for (const l of linhasT) for (const c of l.t?.candidatos ?? []) soma.set(c.numero, (soma.get(c.numero) ?? 0) + c.votos);
+  const cands = [...soma.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_CAND).map(([n]) => n);
+  const { opcao, eixo, t } = base();
+  desenhar('g-ufs', {
+    ...opcao,
+    tooltip: { ...opcao.tooltip, trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: (/** @type {any[]} */ ps) => {
+        const l = linhasT[ps[0]?.dataIndex ?? 0];
+        return `<b>${esc(l?.uf.toUpperCase())}</b> · ${turno}º turno<br>${ps.map((p) => `${p.marker}${esc(p.seriesName)}: ${fmtPct(p.value)}`).join('<br>')}`
+          + `<br>Seções destoantes: ${l?.destoantes == null ? 'sem análise' : num(l.destoantes)}`;
+      } },
+    xAxis: { type: 'category', data: linhasT.map((l) => l.uf.toUpperCase()), ...eixo },
+    yAxis: { type: 'value', max: 1, ...eixo, axisLabel: { ...eixo.axisLabel, formatter: (/** @type {number} */ v) => fmtPct(v, 0) } },
+    series: [
+      ...cands.map((n) => ({ name: nomeCand(n), type: 'bar', itemStyle: { color: corDe(n) },
+        data: linhasT.map((l) => l.t?.candidatos.find((c) => c.numero === n)?.pct ?? null) })),
+      { name: 'Abstenção', type: 'scatter', symbol: 'diamond', symbolSize: 12, itemStyle: { color: t.texto }, data: linhasT.map((l) => l.t?.abstencaoPct ?? null) },
+      { name: 'Mesário', type: 'scatter', symbol: 'triangle', symbolSize: 12, itemStyle: { color: t.aviso }, data: linhasT.map((l) => l.t?.mesarioPct ?? null) },
+    ],
+  });
+}
+
+/** @param {Distribuicao} h */
+function renderHist(h) {
+  if (!h.turnos.length || !h.turnos.some((t) => t.secoes)) return vazio('g-hist', 'sem seções no escopo');
+  const { opcao, eixo, t } = base();
+  const rotulos = h.bins.map((b) => `${b.de}–${b.ate}%`);
+  desenhar('g-hist', {
+    ...opcao,
+    tooltip: { ...opcao.tooltip, trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: (/** @type {any[]} */ ps) => `<b>${esc(ps[0]?.name)}</b> liberados pelo mesário<br>${ps.map((p) => `${p.marker}${esc(p.seriesName)}: ${num(p.value)} seções`).join('<br>')}` },
+    xAxis: { type: 'category', data: rotulos, name: '% do comparecimento', nameLocation: 'middle', nameGap: 28, ...eixo },
+    yAxis: { type: 'value', name: 'seções', ...eixo, axisLabel: { ...eixo.axisLabel, formatter: (/** @type {number} */ v) => num(v) } },
+    grid: { ...opcao.grid, bottom: 28 },
+    series: h.turnos.map((x) => ({ name: `${x.turno}º turno (${num(x.secoes)} seções)`, type: 'bar', barGap: '0%', barCategoryGap: '10%',
+      itemStyle: { color: x.turno === 1 ? rgba(t.ativo.startsWith('#') ? t.ativo : '#2f81f7', 0.45) : t.aviso }, data: x.contagens })),
+  });
+}
+
+/** @param {Mapa} m */
+function renderMapa(m) {
+  if (!vg.mapaPronto) return;
+  const { opcao, t } = base();
+  const porUf = new Map(m.ufs.map((u) => [u.uf.toUpperCase(), u]));
+  const dados = m.ufs.filter((u) => u.uf !== 'zz').map((u) => {
+    const cor = u.vencedor == null ? null : corDe(u.vencedor);
+    const alfa = 0.35 + 0.65 * Math.min(1, (u.margem ?? 0) / 0.4);
+    return { name: u.uf.toUpperCase(), value: u.margem ?? 0,
+      itemStyle: { areaColor: cor ? rgba(cor, alfa) : t.sutil, borderColor: t.borda } };
+  });
+  desenhar('g-mapa', {
+    ...opcao,
+    tooltip: { ...opcao.tooltip, trigger: 'item', formatter: (/** @type {any} */ p) => {
+      const u = porUf.get(p.name);
+      if (!u || !u.coletado) return `<b>${esc(p.name)}</b><br>não coletado`;
+      const lin = u.candidatos.slice(0, 5).map((c) => `<span style="color:${corDe(c.numero)}">●</span> ${esc(nomeCompleto(c.numero))}: ${num(c.votos)} (${fmtPct(c.pct)})`);
+      return `<b>${esc(p.name)}</b> · ${m.turno}º turno · ${num(u.secoes ?? 0)} seções<br>${lin.join('<br>')}`
+        + `${u.candidatos.length > 5 ? `<br>+${u.candidatos.length - 5} candidatos` : ''}<br>Brancos ${num(u.brancos)} · Nulos ${num(u.nulos)}`
+        + `<br>Margem: ${fmtPP(u.margem ?? 0).replace('+', '')}`;
+    } },
+    series: [{ type: 'map', map: 'BR', roam: false, selectedMode: false, showLegendSymbol: false, data: dados, aspectScale: 1,
+      label: { show: true, color: t.texto, fontSize: 10 },
+      emphasis: { label: { color: t.texto }, itemStyle: { borderColor: t.texto, borderWidth: 1.5 } } }],
+  });
+  const vencedores = [...new Set(m.ufs.map((u) => u.vencedor).filter((n) => n != null))];
+  const zz = porUf.get('ZZ');
+  $('vg-mapa-legenda').replaceChildren(
+    ...vencedores.map((n) => el('span', {}, el('i', { style: `background:${corDe(/** @type {number} */ (n))}` }), nomeCompleto(/** @type {number} */ (n)))),
+    el('span', {}, el('i', { style: `background:${t.sutil};border:1px solid ${t.borda}` }), 'não coletado'),
+    el('span', { className: 'dica', textContent: `Exterior (ZZ): ${zz?.coletado ? `${nomeCand(/** @type {number} */ (zz.vencedor))}, margem ${fmtPP(zz.margem ?? 0).replace('+', '')}` : 'não coletado'}` }));
+}
+
+/** @param {Dispersao | null | undefined} d */
+function renderDispersao(d) {
+  if (!d || !d.pontos.length) return vazio('g-dispersao', vg.disponiveis.length ? 'Sem pontos: a UF precisa dos dois turnos extraídos.' : 'Nenhuma UF extraída ainda.');
+  const { opcao, eixo, t } = base();
+  const xs = d.pontos.flatMap((p) => [p.pct1, p.pct2]);
+  const lo = Math.max(0, Math.floor(Math.min(...xs) * 20) / 20);
+  const hi = Math.min(1, Math.ceil(Math.max(...xs) * 20) / 20);
+  /** @param {Ponto} p */
+  const ponto = (p) => [p.pct1, p.pct2, p.comparecimento2, p.id, p.destoantes, p.pontuacao];
+  const cor = corDe(/** @type {number} */ (d.candidato));
+  const porSecao = d.nivel === 'secao';
+  const eixoPct = (/** @type {string} */ nome) => ({ type: 'value', min: lo, max: hi, name: nome, nameLocation: 'middle', nameGap: 32, ...eixo,
+    axisLabel: { ...eixo.axisLabel, formatter: (/** @type {number} */ v) => fmtPct(v, 0) } });
+  desenhar('g-dispersao', {
+    ...opcao,
+    grid: { ...opcao.grid, left: 16, bottom: 24 },
+    tooltip: { ...opcao.tooltip, trigger: 'item', formatter: (/** @type {any} */ p) => {
+      if (!Array.isArray(p.value)) return '';
+      const [a, b, , id, n, pont] = p.value;
+      return `<b>${porSecao ? `Seção ${esc(String(id).split('/').join(' · '))}` : `Zona ${esc(id)}`}</b><br>${esc(nomeCand(/** @type {number} */ (d.candidato)))}: `
+        + `${fmtPct(a)} → ${fmtPct(b)} (${fmtPP(b - a)})<br>`
+        + `${n ? `${porSecao ? 'Com achados' : `${num(n)} seções com achados`} · pontuação máx. ${pont ?? '—'}` : 'Sem achados'}${porSecao ? '<br><i>clique para ver o detalhe</i>' : ''}`;
+    } },
+    xAxis: eixoPct('1º turno (% dos válidos)'),
+    yAxis: eixoPct('2º turno'),
+    series: [
+      { name: 'Sem achados', type: 'scatter', large: d.pontos.length > 3000, symbolSize: porSecao ? 4 : 8,
+        itemStyle: { color: rgba(cor, 0.45) }, data: d.pontos.filter((p) => !p.destoante).map(ponto),
+        markLine: { silent: true, symbol: 'none', lineStyle: { color: t.suave, type: 'dashed' }, label: { show: false },
+          data: [[{ coord: [lo, lo] }, { coord: [hi, hi] }]] } },
+      { name: 'Com achados', type: 'scatter', symbolSize: porSecao ? 7 : 11,
+        itemStyle: { color: t.erro, borderColor: t.cartao, borderWidth: 1 }, data: d.pontos.filter((p) => p.destoante).map(ponto) },
+    ],
+  });
+  $('vg-disp-nota').textContent = `${num(d.pontos.length)} ${porSecao ? 'seções' : 'zonas'}${d.truncado ? ` (de ${num(d.total)}; as de maior pontuação primeiro)` : ''}. `
+    + 'Na diagonal, o candidato teve a mesma proporção nos dois turnos. Em destaque: com achados.'
+    + (porSecao ? ' Clique numa seção para ver o detalhe.' : '');
+}
+
+function redesenhar() {
+  if (!temEcharts()) return;
+  const d = vg.dados;
+  if (d.comp) renderTurnos(d.comp);
+  renderUfs(d.ufsComp);
+  if (d.hist) renderHist(d.hist);
+  if (d.mapa) renderMapa(d.mapa);
+  renderDispersao(d.disp);
+}
+
+/** @param {string} id @param {unknown} err */
+const falhou = (id, err) => vazio(id, `não foi possível carregar: ${/** @type {Error} */ (err).message}`);
+
+async function carregarMapa() {
+  try {
+    if (!vg.mapaPronto) {
+      echarts.registerMap('BR', await obterJson('/mapa-br.json'));
+      vg.mapaPronto = true;
+    }
+    vg.dados.mapa = await obterJson(`/api/analise/mapa?turno=${vg.mapaTurno}`);
+    renderMapa(/** @type {Mapa} */ (vg.dados.mapa));
+  } catch (err) { falhou('g-mapa', err); }
+}
+
+async function carregarEscopo() {
+  const ufsQs = vg.ufs.join(',');
+  try {
+    const c = /** @type {Comparativo} */ (await obterJson(`/api/analise/comparativo?${escopoQs()}`));
+    vg.dados.comp = c;
+    const sec = c.cobertura.secoes.map((s) => `${s.turno}º turno: ${num(s.secoes)} seções`).join(' · ');
+    $('vg-cobertura').textContent = `${nomeEscopo()} — ${sec || 'sem seções'}. UFs com dados: ${c.cobertura.ufs.map((u) => u.toUpperCase()).join(', ') || 'nenhuma'}`
+      + `${c.cobertura.semDados.length ? `; sem dados: ${c.cobertura.semDados.length} UFs` : ''}. Votos de presidente pelo BU.`;
+    if (vg.ufs.length === 1) {
+      $('vg-zona').replaceChildren(el('option', { value: '', textContent: 'todas' }), ...c.zonas.map((z) => el('option', { value: z, textContent: z })));
+      $('vg-zona').value = vg.zona;
+    }
+    renderKpis(c);
+    renderTurnos(c);
+  } catch (err) { falhou('g-turnos', err); }
+  try {
+    const n = vg.ufs.length ? vg.ufs.length : vg.disponiveis.length;
+    vg.dados.ufsComp = n >= 2 ? await obterJson(`/api/analise/ufs-comparacao?ufs=${ufsQs}`) : null;
+    renderUfs(vg.dados.ufsComp);
+  } catch (err) { falhou('g-ufs', err); }
+  try {
+    vg.dados.hist = await obterJson(`/api/analise/distribuicao?ufs=${ufsQs}&metrica=mesario`);
+    renderHist(/** @type {Distribuicao} */ (vg.dados.hist));
+  } catch (err) { falhou('g-hist', err); }
+}
+
+async function carregarDispersao() {
+  if (!vg.dispUf || !vg.disponiveis.includes(vg.dispUf)) vg.dispUf = (vg.ufs.length === 1 ? vg.ufs[0] : vg.disponiveis[0]) ?? '';
+  $('vg-disp-uf').replaceChildren(...vg.disponiveis.map((u) => el('option', { value: u, textContent: u.toUpperCase() })));
+  $('vg-disp-uf').value = vg.dispUf;
+  for (const b of document.querySelectorAll('[data-nivel]')) b.setAttribute('aria-pressed', String(/** @type {HTMLElement} */ (b).dataset.nivel === vg.nivel));
+  if (!vg.dispUf) { vg.dados.disp = null; return renderDispersao(null); }
+  try {
+    const d = /** @type {Dispersao} */ (await obterJson(`/api/analise/dispersao?uf=${vg.dispUf}&nivel=${vg.nivel}&candidato=${encodeURIComponent(vg.dispCand)}`));
+    vg.dados.disp = d;
+    $('vg-disp-cand').replaceChildren(...d.candidatos.map((n) => el('option', { value: String(n), textContent: nomeCompleto(n) })));
+    $('vg-disp-cand').value = d.candidato == null ? '' : String(d.candidato);
+    renderDispersao(d);
+  } catch (err) { falhou('g-dispersao', err); }
+}
+
+// Carrega tudo; as cores dos candidatos saem da ordem de votos do 1º turno no Brasil coletado (fixas entre gráficos).
+async function carregarVisao() {
+  if (!temEcharts()) {
+    $('vg-cobertura').textContent = 'Biblioteca de gráficos indisponível (/vendor/echarts.min.js). Rode npm install.';
+    return;
+  }
+  try {
+    const ufs = /** @type {{ ufs: AnaliseUf[] }} */ (await obterJson('/api/analise/ufs')).ufs;
+    vg.disponiveis = ufs.map((u) => u.uf);
+    vg.assinatura = ufs.map((u) => `${u.uf}:${u.secoes}:${u.analisadoEm ?? ''}`).join('|');
+    vg.ufs = vg.ufs.filter((u) => vg.disponiveis.includes(u));
+    if (!vg.nomesCarregados) {
+      vg.nomes = (await obterJson('/api/analise/candidatos').catch(() => ({ candidatos: {} }))).candidatos ?? {};
+      vg.nomesCarregados = true;
+    }
+    const br = /** @type {Comparativo} */ (await obterJson('/api/analise/comparativo?escopo=brasil'));
+    for (const t of br.turnos) for (const c of t.candidatos) corDe(c.numero);
+  } catch (err) {
+    $('vg-cobertura').textContent = `análise: ${/** @type {Error} */ (err).message}`;
+    return;
+  }
+  renderEscopo();
+  await Promise.all([carregarEscopo(), carregarMapa(), carregarDispersao()]);
+}
+
+// ---- sub-abas da Análise e eventos da visão geral ----
+const visaoVisivel = () => !$('aba-analise').hidden && !$('sub-visao').hidden;
+let visaoIniciada = false;
+function aoMostrar() {
+  if (!visaoVisivel()) return;
+  if (!visaoIniciada) {
+    visaoIniciada = true;
+    carregarVisao();
+  } else for (const g of graficos.values()) g.resize();
+}
+/** @param {string} s */
+function trocarSubaba(s) {
+  if (s !== 'ranking') s = 'visao';
+  for (const b of document.querySelectorAll('[data-subaba]')) b.setAttribute('aria-selected', String(/** @type {HTMLElement} */ (b).dataset.subaba === s));
+  $('sub-visao').hidden = s !== 'visao';
+  $('sub-ranking').hidden = s !== 'ranking';
+  try { localStorage.setItem('subaba', s); } catch { /* sem armazenamento */ }
+  aoMostrar();
+}
+for (const b of document.querySelectorAll('[data-subaba]')) {
+  b.addEventListener('click', () => trocarSubaba(/** @type {HTMLElement} */ (b).dataset.subaba ?? 'visao'));
+}
+window.addEventListener('hashchange', aoMostrar);
+
+/** @param {() => void} f */
+const recarregarEscopo = (f) => { f(); renderEscopo(); carregarEscopo(); };
+$('vg-brasil').addEventListener('click', () => recarregarEscopo(() => { vg.ufs = []; vg.zona = ''; }));
+$('vg-ufs').addEventListener('click', (ev) => {
+  const b = /** @type {HTMLElement | null} */ (/** @type {Element} */ (ev.target).closest('[data-uf]'));
+  const uf = b?.dataset.uf;
+  if (!uf) return;
+  recarregarEscopo(() => {
+    vg.ufs = vg.ufs.includes(uf) ? vg.ufs.filter((u) => u !== uf) : [...vg.ufs, uf].sort();
+    vg.zona = '';
+  });
+  if (vg.ufs.length === 1 && vg.dispUf !== vg.ufs[0]) { vg.dispUf = vg.ufs[0] ?? ''; vg.dispCand = ''; carregarDispersao(); }
+});
+$('vg-zona').addEventListener('change', () => recarregarEscopo(() => { vg.zona = $('vg-zona').value; }));
+for (const b of document.querySelectorAll('[data-mapa-turno]')) {
+  b.addEventListener('click', () => {
+    vg.mapaTurno = Number(/** @type {HTMLElement} */ (b).dataset.mapaTurno);
+    for (const o of document.querySelectorAll('[data-mapa-turno]')) o.setAttribute('aria-pressed', String(o === b));
+    carregarMapa();
+  });
+}
+for (const b of document.querySelectorAll('[data-ufs-turno]')) {
+  b.addEventListener('click', () => {
+    vg.ufsTurno = Number(/** @type {HTMLElement} */ (b).dataset.ufsTurno);
+    for (const o of document.querySelectorAll('[data-ufs-turno]')) o.setAttribute('aria-pressed', String(o === b));
+    renderUfs(vg.dados.ufsComp);
+  });
+}
+for (const b of document.querySelectorAll('[data-turnos-un]')) {
+  b.addEventListener('click', () => {
+    vg.turnosUn = /** @type {HTMLElement} */ (b).dataset.turnosUn ?? 'pct';
+    for (const o of document.querySelectorAll('[data-turnos-un]')) o.setAttribute('aria-pressed', String(o === b));
+    if (vg.dados.comp) renderTurnos(vg.dados.comp);
+  });
+}
+for (const b of document.querySelectorAll('[data-nivel]')) {
+  b.addEventListener('click', () => { vg.nivel = /** @type {HTMLElement} */ (b).dataset.nivel ?? 'zona'; carregarDispersao(); });
+}
+$('vg-disp-uf').addEventListener('change', () => { vg.dispUf = $('vg-disp-uf').value; vg.dispCand = ''; carregarDispersao(); });
+$('vg-disp-cand').addEventListener('change', () => { vg.dispCand = $('vg-disp-cand').value; carregarDispersao(); });
+
+
+// Tema claro/escuro do sistema: redesenha com as novas cores.
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redesenhar);
+
+// UF extraída/analisada de novo: recarrega a visão geral quando estiver visível.
+setInterval(() => {
+  if (!visaoIniciada || !visaoVisivel()) return;
+  const a = an.ufs.map((u) => `${u.uf}:${u.secoes}:${u.analisadoEm ?? ''}`).join('|');
+  if (a && a !== vg.assinatura) carregarVisao();
+}, 5000);
+
+{
+  let sub = 'visao';
+  try { sub = localStorage.getItem('subaba') ?? 'visao'; } catch { /* sem armazenamento */ }
+  trocarSubaba(sub);
+}

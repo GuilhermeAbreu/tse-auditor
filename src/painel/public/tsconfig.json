@@ -9,5 +9,5 @@
     "types": [],
     "skipLibCheck": true
   },
-  "files": ["app.js"]
+  "files": ["app.js", "echarts-global.d.ts"]
 }

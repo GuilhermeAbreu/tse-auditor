@@ -172,3 +172,29 @@ dialog pre { white-space: pre-wrap; font-size: 12px; }
 .grupo-erro summary { cursor: pointer; margin: .3rem 0; }
 .grupo-erro .selo { display: inline-block; min-width: 2.2em; padding: 0 .5em; border-radius: 1em; background: #b3261e; color: #fff; text-align: center; font-size: .85em; }
 .grupo-erro ul { margin: .2rem 0 .6rem 2rem; }
+
+/* ---- análise: visão geral (gráficos) ---- */
+.subabas { display: flex; gap: 8px; margin: 0 0 16px; border-bottom: 1px solid var(--borda); }
+.subabas button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--suave); padding: 8px 16px; }
+.subabas button[aria-selected="true"] { color: var(--texto); border-bottom-color: var(--ativo); font-weight: 600; }
+.escopo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rotulo-escopo { color: var(--suave); font-size: 12px; margin-right: 4px; }
+.chips { display: contents; }
+.chip { border-radius: 14px; padding: 2px 12px; font-size: 13px; }
+.chip[aria-pressed="true"] { background: var(--ativo); border-color: var(--ativo); color: #fff; }
+.chip[aria-pressed="true"]:hover:not(:disabled) { background: var(--ativo); filter: brightness(1.1); }
+.kpis { margin: 8px 0 16px; }
+.kpis .delta { font-weight: 600; }
+.kpis .delta.sobe { color: var(--ok); }
+.kpis .delta.desce { color: var(--erro); }
+.grade-graficos { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 16px; margin-bottom: 24px; }
+.grafico { margin: 0; background: var(--cartao); border-radius: 8px; padding: 16px; min-width: 0; }
+.grafico.largo { grid-column: 1 / -1; }
+.grafico figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 8px; }
+.grafico figcaption h3 { margin: 0; font-size: 15px; flex: 1; min-width: 160px; }
+.grafico .alternar { display: inline-flex; gap: 4px; }
+.grafico .dica { margin: 8px 0 0; }
+.area { width: 100%; height: 320px; }
+.area.alta { height: 420px; }
+.area .vazio { display: flex; height: 100%; align-items: center; justify-content: center; color: var(--suave); text-align: center; padding: 16px; }
+@media (max-width: 640px) { .area, .area.alta { height: 300px; } }

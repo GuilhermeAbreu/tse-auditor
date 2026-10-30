@@ -9,7 +9,7 @@ export const nomeConfigSecoes = ({ pleito, uf }: { pleito: string; uf: string })
 export const nomeIndiceSecao = ({ pleito, uf, mun, zona, secao }: SecaoChave) =>
   `p${p6(pleito)}-${uf}-m${mun}-z${zona}-s${secao}-aux.json`;
 
-function preencher(template: string, valores: Valores): string {
+export function preencher(template: string, valores: Valores): string {
   return template.replace(/<(\w+)>/g, (_, chave: string) => {
     if (valores[chave] == null) throw new Error(`template sem valor para <${chave}>: ${template}`);
     return String(valores[chave]);

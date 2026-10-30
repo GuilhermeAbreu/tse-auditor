@@ -19,7 +19,7 @@ export function lerEleicoes(json: EleCJson): Eleicoes {
       cargos: (e.abr ?? []).flatMap((a) => a.cp ?? []).map((c) => ({ cd: c.cd, nome: c.ds })),
     })),
   }));
-  return { templates: { cs: templates.cs!, aux: templates.aux! }, pleitos };
+  return { templates: { cs: templates.cs!, aux: templates.aux!, ...(templates.u ? { u: templates.u } : {}) }, pleitos };
 }
 
 export async function buscarEleicoes(http: ClienteHttp, { base, ambiente }: { base: string; ambiente: string }): Promise<Eleicoes> {

@@ -43,19 +43,79 @@
   <section id="aba-analise" class="aba" hidden>
     <p class="dica intro">Sinais estatísticos e conferências determinísticas sobre BU, RDV e log. Uma seção destoante não é
       prova de nada: cada uma vem com explicações técnicas candidatas que precisam ser verificadas antes de qualquer conclusão.</p>
-    <div id="an-ufs" class="cartoes-uf"></div>
-    <input type="hidden" id="an-uf">
-    <div class="titulo-ranking">
-      <h2>Ranking de seções destoantes <span id="an-uf-titulo" class="dica"></span></h2>
-      <button type="button" id="btn-glossario" title="Glossário de sinais e explicações">? Glossário</button>
+    <div class="subabas" role="tablist" aria-label="Análise">
+      <button type="button" role="tab" id="sub-btn-visao" data-subaba="visao" aria-selected="true">Visão geral</button>
+      <button type="button" role="tab" id="sub-btn-ranking" data-subaba="ranking" aria-selected="false">Ranking</button>
     </div>
-    <p class="filtros"><label>Sinal <select id="an-sinal"><option value="">todos</option></select></label>
-      <span id="an-msg" class="dica"></span></p>
-    <div class="rolagem">
-      <table id="an-ranking">
-        <thead><tr><th>Seção</th><th>Pontuação</th><th>Sinais</th><th>Explicações</th></tr></thead>
-        <tbody></tbody>
-      </table>
+
+    <div id="sub-visao" role="tabpanel" aria-labelledby="sub-btn-visao">
+      <div class="escopo" role="group" aria-label="Escopo">
+        <span class="rotulo-escopo">Escopo</span>
+        <button type="button" class="chip" id="vg-brasil" aria-pressed="true">Brasil</button>
+        <span id="vg-ufs" class="chips"></span>
+        <label id="vg-zona-rotulo" hidden>Zona <select id="vg-zona"><option value="">todas</option></select></label>
+      </div>
+      <p id="vg-cobertura" class="dica" role="status"></p>
+      <div id="vg-kpis" class="cartoes kpis"></div>
+      <div class="grade-graficos">
+        <figure class="grafico">
+          <figcaption><h3>Vencedor por UF</h3>
+            <span class="alternar" role="group" aria-label="Turno do mapa">
+              <button type="button" class="chip" data-mapa-turno="1" aria-pressed="false">1º turno</button>
+              <button type="button" class="chip" data-mapa-turno="2" aria-pressed="true">2º turno</button></span></figcaption>
+          <div id="g-mapa" class="area alta" role="img" aria-label="Mapa do Brasil com o candidato mais votado por UF"></div>
+          <p id="vg-mapa-legenda" class="legenda"></p>
+          <p class="dica">Cor = candidato mais votado; intensidade = margem sobre o 2º colocado. Cinza = não coletado. Clique numa UF para incluí-la no escopo.</p>
+        </figure>
+        <figure class="grafico">
+          <figcaption><h3>1º × 2º turno</h3>
+            <span class="alternar" role="group" aria-label="Unidade">
+              <button type="button" class="chip" data-turnos-un="pct" aria-pressed="true">%</button>
+              <button type="button" class="chip" data-turnos-un="votos" aria-pressed="false">votos</button></span></figcaption>
+          <div id="g-turnos" class="area alta" role="img" aria-label="Votos para presidente no 1º e no 2º turno"></div>
+          <p class="dica">% sobre o comparecimento (inclui brancos e nulos), pelo BU.</p>
+        </figure>
+        <figure class="grafico" id="vg-comparar">
+          <figcaption><h3>Comparar UFs</h3>
+            <span class="alternar" role="group" aria-label="Turno da comparação">
+              <button type="button" class="chip" data-ufs-turno="1" aria-pressed="false">1º turno</button>
+              <button type="button" class="chip" data-ufs-turno="2" aria-pressed="true">2º turno</button></span></figcaption>
+          <div id="g-ufs" class="area" role="img" aria-label="Percentual por candidato, abstenção e liberação pelo mesário em cada UF"></div>
+          <p class="dica">Candidatos: % dos votos válidos. Abstenção: % dos aptos. Mesário: % do comparecimento.</p>
+        </figure>
+        <figure class="grafico">
+          <figcaption><h3>Liberação pelo mesário</h3></figcaption>
+          <div id="g-hist" class="area" role="img" aria-label="Histograma da taxa de liberação pelo mesário por seção, 1º e 2º turno"></div>
+          <p class="dica">Número de seções por faixa de 2 p.p. da proporção de eleitores liberados pelo mesário.</p>
+        </figure>
+        <figure class="grafico largo">
+          <figcaption><h3>Zonas e seções: 1º × 2º turno</h3>
+            <label>UF <select id="vg-disp-uf"></select></label>
+            <label>Candidato <select id="vg-disp-cand"></select></label>
+            <span class="alternar" role="group" aria-label="Nível">
+              <button type="button" class="chip" data-nivel="zona" aria-pressed="true">zona</button>
+              <button type="button" class="chip" data-nivel="secao" aria-pressed="false">seção</button></span></figcaption>
+          <div id="g-dispersao" class="area alta" role="img" aria-label="Dispersão do percentual do candidato no 1º e no 2º turno por zona ou seção"></div>
+          <p class="dica" id="vg-disp-nota">Cada ponto é uma zona (ou seção). Na diagonal, o candidato teve a mesma proporção nos dois turnos. Em destaque: com achados. Clique numa seção para ver o detalhe.</p>
+        </figure>
+      </div>
+    </div>
+
+    <div id="sub-ranking" role="tabpanel" aria-labelledby="sub-btn-ranking" hidden>
+      <div id="an-ufs" class="cartoes-uf"></div>
+      <input type="hidden" id="an-uf">
+      <div class="titulo-ranking">
+        <h2>Ranking de seções destoantes <span id="an-uf-titulo" class="dica"></span></h2>
+        <button type="button" id="btn-glossario" title="Glossário de sinais e explicações">? Glossário</button>
+      </div>
+      <p class="filtros"><label>Sinal <select id="an-sinal"><option value="">todos</option></select></label>
+        <span id="an-msg" class="dica"></span></p>
+      <div class="rolagem">
+        <table id="an-ranking">
+          <thead><tr><th>Seção</th><th>Pontuação</th><th>Sinais</th><th>Explicações</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
     <dialog id="an-modal"><button id="an-modal-fechar" class="fechar" aria-label="fechar">×</button><div id="an-modal-corpo"></div></dialog>
     <dialog id="gl-modal"><button id="gl-modal-fechar" class="fechar" aria-label="fechar">×</button><div id="an-glossario"></div></dialog>
@@ -94,6 +154,7 @@
   </section>
   </main>
 
+  <script src="/vendor/echarts.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
