@@ -23,6 +23,8 @@ button.pequeno { padding: 2px 8px; font-size: 12px; }
 .situacao { flex: 1; min-width: 200px; color: var(--suave); font-variant-numeric: tabular-nums; }
 .situacao.erro { color: var(--erro); font-weight: 600; }
 .faixa-erro { background: var(--erro); color: #fff; padding: 8px 16px; font-weight: 600; }
+.faixa-pergunta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 16px; background: var(--cartao); border-bottom: 1px solid var(--borda); }
+.faixa-pergunta span { flex: 1 1 320px; }
 .abas { max-width: 1200px; margin: 0 auto; padding: 0 16px; display: flex; gap: 8px; }
 .abas a { padding: 8px 16px; color: var(--suave); text-decoration: none; border-bottom: 2px solid transparent; }
 .abas a.ativa { color: var(--texto); border-bottom-color: var(--ativo); font-weight: 600; }

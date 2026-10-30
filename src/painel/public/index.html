@@ -15,6 +15,11 @@
       <button id="btn-parar" data-coleta="parar" hidden>Parar coleta</button>
     </header>
     <div id="manifest-erro" class="faixa-erro" role="alert" hidden></div>
+    <div id="pergunta-servico" class="faixa-pergunta" role="region" aria-label="Início automático" hidden>
+      <span>O TSE Auditor está rodando em segundo plano. Quando o computador ligar, a coleta deve continuar sozinha?</span>
+      <button type="button" class="primario" data-iniciar-ao-ligar="true">Sim, continuar sozinha</button>
+      <button type="button" data-iniciar-ao-ligar="false">Não, eu inicio pelo painel</button>
+    </div>
     <nav class="abas" aria-label="Seções do painel">
       <a href="#coleta" data-aba="coleta">Coleta</a>
       <a href="#analise" data-aba="analise">Análise</a>
@@ -152,6 +157,11 @@
         <p><button type="button" id="cfg-padroes">Restaurar padrões</button>
           <span class="dica">preenche concorrência e opções avançadas com os padrões; pleitos e UFs ficam como estão</span></p>
       </details>
+      <fieldset>
+        <legend>Ao ligar o computador</legend>
+        <label><input type="checkbox" id="cfg-iniciar-ao-ligar"> Retomar a coleta sozinho quando o serviço subir</label>
+        <p class="dica" id="cfg-servico-dica">Vale quando o TSE Auditor está instalado como serviço (<code>npm run servico -- instalar</code>). Salvo na hora, sem precisar de Aplicar.</p>
+      </fieldset>
       <p>Pasta de dados: <code id="cfg-dados">—</code></p>
       <p id="cfg-msg" role="status"></p>
       <p><button type="submit" value="aplicar">Aplicar</button>

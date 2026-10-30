@@ -4,7 +4,7 @@
  * Elementos com tipo específico usados pelo painel (os demais são HTMLElement).
  * @typedef {{
  *   'btn-iniciar': HTMLButtonElement, 'btn-parar': HTMLButtonElement,
- *   'cfg-concorrencia': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLInputElement,
+ *   'cfg-concorrencia': HTMLInputElement, 'cfg-iniciar-ao-ligar': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLInputElement,
  *   'an-sinal': HTMLSelectElement, 'vg-zona': HTMLSelectElement, 'vg-disp-uf': HTMLSelectElement, 'vg-disp-cand': HTMLSelectElement, 'an-modal': HTMLDialogElement, 'gl-modal': HTMLDialogElement, 'an-ranking': HTMLTableElement,
  * }} Ids
  */
@@ -1417,6 +1417,31 @@ for (const b of document.querySelectorAll('[data-nivel]')) {
 $('vg-disp-uf').addEventListener('change', () => { vg.dispUf = $('vg-disp-uf').value; vg.dispCand = ''; carregarDispersao(); });
 $('vg-disp-cand').addEventListener('change', () => { vg.dispCand = $('vg-disp-cand').value; carregarDispersao(); });
 
+
+// Início automático (serviço do sistema): pergunta uma vez numa faixa no topo; depois, a opção fica na Configuração.
+/** @param {{ iniciarAoLigar: boolean | null, servico: boolean }} p */
+function mostrarPreferencias(p) {
+  $('pergunta-servico').hidden = !(p.servico && p.iniciarAoLigar == null);
+  $('cfg-iniciar-ao-ligar').checked = p.iniciarAoLigar === true;
+  $('cfg-servico-dica').replaceChildren(p.servico
+    ? 'Rodando agora como serviço do sistema. Salvo na hora, sem precisar de Aplicar.'
+    : 'Vale quando o TSE Auditor está instalado como serviço (npm run servico -- instalar). Salvo na hora, sem precisar de Aplicar.');
+}
+/** @param {boolean} iniciarAoLigar */
+async function salvarPreferencia(iniciarAoLigar) {
+  try {
+    mostrarPreferencias(await obterJson('/api/preferencias', {
+      method: 'POST', headers: { 'x-tse-auditor': '1', 'content-type': 'application/json' }, body: JSON.stringify({ iniciarAoLigar }),
+    }));
+  } catch (err) {
+    avisar(`preferência não salva: ${/** @type {Error} */ (err).message}`);
+  }
+}
+for (const b of document.querySelectorAll('[data-iniciar-ao-ligar]')) {
+  b.addEventListener('click', () => salvarPreferencia(/** @type {HTMLElement} */ (b).dataset.iniciarAoLigar === 'true'));
+}
+$('cfg-iniciar-ao-ligar').addEventListener('change', () => salvarPreferencia($('cfg-iniciar-ao-ligar').checked));
+obterJson('/api/preferencias').then(mostrarPreferencias, () => { /* painel antigo ou indisponível: sem a pergunta */ });
 
 // Tema claro/escuro do sistema: redesenha com as novas cores.
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redesenhar);

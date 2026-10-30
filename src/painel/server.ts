@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { detalharSecao, FilaAnalise, listarUfs, ranking, turnosPelasEleicoes } from './analise.ts';
 import { comparativo, distribuicao, dispersao, mapa, migracao, nomesCandidatos, ParametroInvalido, ufsComparacao } from './graficos.ts';
 import { PADRAO } from '../config.ts';
+import { caminhoPreferencias, lerPreferencias, salvarPreferencias, validarPreferencias, type Preferencias } from '../preferencias.ts';
 import { UFS } from '../ufs.ts';
 import type { AddressInfo } from 'node:net';
 import type { ControleColeta } from '../coleta/controle.ts';
@@ -113,9 +114,13 @@ async function aplicarConfig(req: Req, res: Res, controle: ControlePainel): Prom
 
 // Painel local: página estática, estado em JSON, estado ao vivo por SSE, configuração e controles da coleta.
 // Só aceita Host/Origin locais e POST com cabeçalho próprio (defesa contra CSRF e DNS rebinding).
-export function criarPainel({ controle, fila = new FilaAnalise({ turnosDe: turnosPelasEleicoes(controle.eleicoes) }) }: {
+export function criarPainel({
+  controle, fila = new FilaAnalise({ turnosDe: turnosPelasEleicoes(controle.eleicoes) }), preferencias = caminhoPreferencias(), servico = false,
+}: {
   controle: ControlePainel;
   fila?: FilaAnalise;
+  preferencias?: string; // arquivo de preferências do aplicativo
+  servico?: boolean; // rodando como serviço do sistema (o painel pergunta se a coleta deve começar sozinha)
 }): ServidorPainel {
   const obterEstado = () => controle.obterEstado();
   const dados = () => controle.configuracao()?.dados ?? null;
@@ -160,6 +165,19 @@ export function criarPainel({ controle, fila = new FilaAnalise({ turnosDe: turno
         });
       }
       if (req.method === 'POST' && pathname === '/api/config') return aplicarConfig(req, res, controle);
+      if (req.method === 'GET' && pathname === '/api/preferencias') return json(res, 200, { ...(await lerPreferencias(preferencias)), servico });
+      if (req.method === 'POST' && pathname === '/api/preferencias') {
+        let p: Preferencias | null;
+        try {
+          p = validarPreferencias(await lerJson(req));
+        } catch (err) {
+          if (err instanceof CorpoInvalido) return json(res, err.status, { erro: err.message });
+          throw err;
+        }
+        if (!p) return json(res, 400, { erro: 'esperado { iniciarAoLigar: true | false }' });
+        await salvarPreferencias(preferencias, p);
+        return json(res, 200, { ...p, servico });
+      }
 
       const global = /^\/api\/coleta\/(iniciar|parar)$/.exec(pathname);
       const daUf = /^\/api\/uf\/([a-z]{2})\/(pausar|iniciar)$/.exec(pathname);

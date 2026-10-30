@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { setTimeout as espera } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { PADRAO, pastaDados } from './config.ts';
 import { configInicial, lerConfigSalva } from './configSalva.ts';
+import { caminhoPreferencias, lerPreferencias } from './preferencias.ts';
+import { VolumeError } from './storage/disco.ts';
 import { UFS } from './ufs.ts';
 import { fmtBytes, linhaDeProgresso } from './formatar.ts';
 import { HttpClient } from './net/http.ts';
@@ -11,7 +14,7 @@ import { criarPainel } from './painel/server.ts';
 import { extrairUF } from './extracao/extrator.ts';
 import { analisarUF, resumir } from './cruzamentos/index.ts';
 import type { AddressInfo } from 'node:net';
-import type { Eleicoes, Turnos } from './tipos/dominio.ts';
+import type { ConfigEntrada, Eleicoes, Turnos } from './tipos/dominio.ts';
 
 interface OpcoesCli {
   pleito?: string;
@@ -21,6 +24,7 @@ interface OpcoesCli {
   porta?: number;
   turnos?: string;
   'sem-iniciar'?: boolean;
+  servico?: boolean;
 }
 
 const mensagem = (err: unknown) => (err as Error).message;
@@ -28,7 +32,7 @@ const mensagem = (err: unknown) => (err as Error).message;
 const AJUDA = `uso:
   tse-auditor eleicoes
   tse-auditor coletar --pleito 3220,3221 [--uf ac,al] [--dados <pasta>] [--concorrencia 4]
-  tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3000] [--sem-iniciar]
+  tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3005] [--sem-iniciar] [--servico]
   tse-auditor extrair --uf ac [--pleito 3220,3221] [--dados <pasta>]   (BU/RDV/log -> parquet/<UF>/)
   tse-auditor analisar --uf ac [--dados <pasta>] [--turnos 3220,3221]  (cruzamentos -> parquet/<UF>/achados.parquet)
     sem --turnos, o 1º/2º turno sai do ele-c.json (pleitos presentes nos Parquet); "--turnos 3220" = só um turno
@@ -49,9 +53,10 @@ function listarEleicoes({ pleitos }: Eleicoes): void {
 const lista = (texto: string) => texto.split(',').map((x) => x.trim()).filter(Boolean);
 
 // Primeiro Ctrl-C: parada ordenada. Segundo: força a saída (fecha o manifest se der).
+// Ctrl-C (SIGINT) ou o sistema parando o serviço (SIGTERM): termina as seções em andamento e grava o manifesto.
 function tratarCtrlC(controle: ControleColeta, aoParar: () => void): void {
   let vezes = 0;
-  process.on('SIGINT', () => {
+  const parar = () => {
     vezes++;
     if (vezes > 1) {
       controle.fecharJa();
@@ -59,7 +64,32 @@ function tratarCtrlC(controle: ControleColeta, aoParar: () => void): void {
     }
     console.log('encerrando: aguardando as seções em andamento; Ctrl-C de novo força a saída');
     aoParar();
-  });
+  };
+  process.on('SIGINT', parar);
+  process.on('SIGTERM', parar);
+}
+
+// Como serviço, o HD externo pode montar depois do login: tenta aplicar a configuração salva até o HD aparecer
+// (sem criar nada no disco interno; garantirVolume recusa a pasta ausente). A coleta só começa sozinha se o usuário
+// escolheu isso no painel (preferencias.json).
+async function aplicarComoServico(controle: ControleColeta, config: ConfigEntrada): Promise<void> {
+  const { iniciarAoLigar } = await lerPreferencias(caminhoPreferencias(controle.arquivoConfig));
+  let avisou = false;
+  while (!controle.configuracao()) {
+    try {
+      await controle.aplicar(config, { iniciar: iniciarAoLigar === true, salvar: false });
+      console.log(iniciarAoLigar ? 'configuração salva aplicada; coleta iniciada' : 'configuração salva aplicada; coleta aguardando o painel');
+      return;
+    } catch (err) {
+      if (!(err instanceof VolumeError)) {
+        console.error(`configuração salva não aplicada (${mensagem(err)}); escolha outra no painel`);
+        return;
+      }
+      if (!avisou) console.log(`aguardando o HD: ${mensagem(err)}`);
+      avisou = true;
+      await espera(15_000);
+    }
+  }
 }
 
 async function coletar(controle: ControleColeta, opcoes: OpcoesCli): Promise<void> {
@@ -96,7 +126,9 @@ async function coletar(controle: ControleColeta, opcoes: OpcoesCli): Promise<voi
 
 async function painel(controle: ControleColeta, opcoes: OpcoesCli): Promise<void> {
   const inicial = configInicial(opcoes, await lerConfigSalva(controle.arquivoConfig));
-  if (inicial) {
+  if (inicial && opcoes.servico) {
+    // aplicada depois que o painel sobe (veja aplicarComoServico)
+  } else if (inicial) {
     try {
       await controle.aplicar(inicial.config, { iniciar: !opcoes['sem-iniciar'] });
     } catch (err) {
@@ -108,7 +140,7 @@ async function painel(controle: ControleColeta, opcoes: OpcoesCli): Promise<void
   }
 
   const porta = opcoes.porta ?? PADRAO.porta;
-  const servidor = criarPainel({ controle });
+  const servidor = criarPainel({ controle, preferencias: caminhoPreferencias(controle.arquivoConfig), servico: !!opcoes.servico });
   try {
     await new Promise<void>((resolve, reject) => {
       servidor.once('error', reject);
@@ -118,8 +150,9 @@ async function painel(controle: ControleColeta, opcoes: OpcoesCli): Promise<void
     await controle.fechar();
     throw (err as NodeJS.ErrnoException).code === 'EADDRINUSE' ? new Error(`porta ${porta} em uso; use --porta`) : err;
   }
-  if (!controle.configuracao()) console.log('sem configuração: escolha pleitos e UFs no painel');
+  if (!controle.configuracao() && !(inicial && opcoes.servico)) console.log('sem configuração: escolha pleitos e UFs no painel');
   console.log(`painel em http://localhost:${(servidor.address() as AddressInfo).port}`);
+  if (inicial && opcoes.servico) void aplicarComoServico(controle, inicial.config);
   tratarCtrlC(controle, async () => {
     await controle.fechar();
     process.exit(0);
@@ -182,6 +215,7 @@ async function main(argv: string[]): Promise<void> {
       porta: { type: 'string' },
       turnos: { type: 'string' },
       'sem-iniciar': { type: 'boolean' },
+      servico: { type: 'boolean' },
     },
   });
   const opcoes: OpcoesCli = { ...values, concorrencia: undefined, porta: undefined };

@@ -185,3 +185,17 @@ test('configuração: GET mostra atual e disponíveis; POST aplica ou recusa', a
   assert.equal(controle.coletor!.estado.rodando, true);
   await controle.coletor!.aguardar();
 });
+
+test('preferências: começa sem resposta, salva só booleano e exige o cabeçalho', async (t) => {
+  const arquivo = path.join(await mkdtemp(path.join(os.tmpdir(), 'tse-pref-')), 'preferencias.json');
+  const servidor = criarPainel({ controle: falso({ obterEstado: async () => ({}) }), preferencias: arquivo, servico: true });
+  await new Promise<void>((r) => servidor.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise<void>((r) => { servidor.closeAllConnections(); servidor.close(() => r()); }));
+  const base = `http://127.0.0.1:${(servidor.address() as AddressInfo).port}`;
+  assert.deepEqual(await (await fetch(`${base}/api/preferencias`)).json(), { iniciarAoLigar: null, servico: true });
+  const enviar = (corpo: unknown, headers = HJ) => fetch(`${base}/api/preferencias`, { method: 'POST', headers, body: JSON.stringify(corpo) });
+  assert.equal((await enviar({ iniciarAoLigar: true }, { 'content-type': 'application/json' })).status, 403);
+  assert.equal((await enviar({ iniciarAoLigar: 'sim' })).status, 400);
+  assert.equal((await enviar({ iniciarAoLigar: true })).status, 200);
+  assert.deepEqual(await (await fetch(`${base}/api/preferencias`)).json(), { iniciarAoLigar: true, servico: true });
+});

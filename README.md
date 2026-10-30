@@ -10,6 +10,7 @@ Toda a análise é feita por código determinístico: os mesmos arquivos geram s
 
 - [Requisitos](#requisitos)
 - [Início rápido](#início-rápido)
+- [Rodar em segundo plano](#rodar-em-segundo-plano)
 - [Como funciona](#como-funciona)
 - [Painel web](#painel-web)
 - [Linha de comando](#linha-de-comando)
@@ -35,13 +36,32 @@ npm install
 node src/cli.ts painel
 ```
 
-Abra **http://localhost:3000**, escolha os pleitos e as UFs na seção **Configuração** e clique em **Aplicar e iniciar**. A coleta acompanha o progresso ao vivo. Quando uma UF termina, a extração e a análise rodam automaticamente, e o resultado aparece na aba **Análise**.
+Abra **http://localhost:3005**, escolha os pleitos e as UFs na seção **Configuração** e clique em **Aplicar e iniciar**. A coleta acompanha o progresso ao vivo. Quando uma UF termina, a extração e a análise rodam automaticamente, e o resultado aparece na aba **Análise**.
 
 Para ver quais eleições existem:
 
 ```bash
 node src/cli.ts eleicoes
 ```
+
+## Rodar em segundo plano
+
+No Linux, o TSE Auditor pode ser instalado como serviço do usuário (systemd). Ele sobe no login, volta se cair, segue coletando com o navegador fechado e ganha o atalho **TSE Auditor** no menu de aplicativos, que abre o painel.
+
+```bash
+npm run servico -- instalar    # cria o serviço e o atalho, e inicia (feche antes um painel aberto no terminal)
+npm run servico -- status      # está rodando?
+npm run servico -- logs        # acompanha as mensagens
+npm run servico -- parar       # encerra como o Ctrl-C: termina as seções em andamento e grava o manifesto
+npm run servico -- iniciar
+npm run servico -- remover     # tira o serviço e o atalho (dados e configuração ficam)
+```
+
+- **Coleta ao ligar:** na primeira vez, o painel pergunta se a coleta deve continuar sozinha quando o serviço subir. A resposta fica em `~/.config/tse-auditor/preferencias.json` e pode ser trocada em **Configuração › Ao ligar o computador**. Se a resposta for não, o painel sobe com a configuração salva, e a coleta só começa quando você clicar em iniciar.
+- **HD externo:** se o serviço subir antes de o HD montar, ele espera (tenta a cada 15 s) e não cria nada no disco interno.
+- **Porta e HD:** `TSE_PORTA` e `TSE_HD` no momento do `instalar` mudam a porta (padrão 3005) e o HD padrão.
+- **Arquivos instalados:** `~/.config/systemd/user/tse-auditor.service` e `~/.local/share/applications/tse-auditor.desktop`. O serviço usa o `node` que estava no PATH na instalação; ao trocar de versão do Node, rode `instalar` de novo.
+- **Sem estar logado:** para coletar mesmo sem sessão aberta, rode uma vez `loginctl enable-linger $USER`.
 
 ## Como funciona
 
@@ -204,7 +224,8 @@ Uma seção com pontuação alta **e sem nenhuma explicação candidata** é a q
 
 ```text
 src/
-├── cli.ts                  comandos
+├── cli.ts                  comandos (painel --servico = modo serviço)
+├── preferencias.ts         preferências do aplicativo (coleta ao ligar)
 ├── tse/                    ele-c.json, URLs, índices de seção, cadeia de integridade
 ├── net/http.ts             cliente HTTP com limite de conexões, espera progressiva e pausa em 429
 ├── storage/                manifest SQLite, empacotamento em zip, espaço em disco
@@ -213,6 +234,10 @@ src/
 ├── cruzamentos/            limites, turnos, mesário e horários (SQL em DuckDB)
 ├── painel/                 servidor HTTP, API de análise e dos gráficos (graficos.ts) e página web
 └── tipos/                  tipos do domínio e dos formatos do TSE
+scripts/
+├── servico.sh              instala e controla o serviço do usuário (systemd) e o atalho
+└── baixar-fixtures.sh      baixa de novo as fixtures reais do TSE
+assets/tse-auditor.svg      ícone do atalho
 docs/
 ├── specs/                  desenho do sistema
 ├── planos/                 planos de implementação e divergências
