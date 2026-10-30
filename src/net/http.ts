@@ -12,7 +12,9 @@ export class HttpError extends Error {
   }
 }
 
-const retentavel = (status: number) => status === 429 || status >= 500;
+// 304 também: o cliente nunca envia cabeçalho condicional (If-None-Match/If-Modified-Since), então um 304 é
+// falha momentânea do servidor ou do cache dele (visto no índice de uma seção do AM), não "arquivo sem mudança".
+const retentavel = (status: number) => status === 429 || status === 304 || status >= 500;
 const dormirPadrao = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // GET com limite de conexões simultâneas e espera progressiva em 429, 5xx e falhas de rede.
