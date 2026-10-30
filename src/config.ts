@@ -7,7 +7,7 @@ export const PADRAO = {
   concorrencia: 4,
   userAgent: 'tse-auditor/0.1 (auditoria independente dos arquivos de urna)',
   minLivreBytes: 20 * 1024 ** 3,
-  porta: 3000,
+  porta: 3005,
   // ajustáveis no painel (veja src/coleta/opcoes.ts)
   tentativas: 8,
   esperaBaseMs: 1000,
