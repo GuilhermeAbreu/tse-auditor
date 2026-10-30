@@ -120,6 +120,7 @@ Nada é fixo no código para um ano específico: eleições, turnos e caminhos d
 - Velocidade, espaço livre no HD e projeção do tamanho total.
 - Botões para iniciar e parar a coleta e para pausar ou retomar cada UF.
 - Seções com erro são tentadas de novo automaticamente: ao fim de cada UF, depois de 30 s, uma segunda passada só pelos municípios com erro. Se ainda sobrar erro, o botão **Tentar de novo** da UF a põe de volta na fila, logo depois da UF que está baixando.
+- Se o HD for desconectado no meio da gravação, a pasta temporária de um município pode ficar ilegível (o sistema responde `Invalid argument`). A coleta move essa pasta para `quarentena/`, sem apagar nada, avisa no painel e baixa de novo as seções afetadas. Para consertar o disco de vez, rode `chkdsk /f` no Windows (NTFS) ou `fsck` no Linux.
 - Erros agrupados por causa, com as seções de exemplo.
 
 **Configuração**
@@ -208,6 +209,7 @@ Tudo fica numa pasta por ano dentro da pasta escolhida no painel (aqui chamada `
 │   ├── eventos_log.parquet            todos os eventos do log da urna
 │   ├── falhas.parquet                 seções que não puderam ser decodificadas
 │   └── achados.parquet                sinais com pontuação e explicações candidatas
+├── quarentena/                        pastas temporárias ilegíveis postas de lado (podem ser apagadas depois de reparar o disco)
 └── staging/                           temporário durante a coleta
 ```
 

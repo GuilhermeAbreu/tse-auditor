@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import fsp, { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { Coletor, SemConexaoError } from '../../src/coleta/coletor.ts';
@@ -214,6 +215,34 @@ test('seção com erro momentâneo é refeita na segunda passada da mesma execu�
   assert.equal(manifest.secao(S77)!.status, 'completa');
   assert.equal(fake.requisicoes.filter((r) => r.endsWith(indice)).length, 3);
   assert.ok(manifest.eventos(20).some((e) => /tentando de novo as seções com erro/.test(e.msg)));
+});
+
+test('staging com entrada corrompida vai para quarentena e as seções são baixadas de novo', async (t) => {
+  const { dados, manifest, coletor } = await montar(t, { segundaPassada: true });
+  const staging = path.join(dados, 'staging/AC/3220/01066');
+  // simula o NTFS depois de uma desconexão: a primeira leitura do staging falha com EINVAL
+  const original = fsp.readdir;
+  let falhou = false;
+  t.mock.method(fsp, 'readdir', (async (caminho: string, ...resto: unknown[]) => {
+    if (!falhou && caminho === staging) {
+      falhou = true;
+      throw Object.assign(new Error(`EINVAL: invalid argument, scandir '${caminho}'`), { code: 'EINVAL', path: caminho });
+    }
+    return (original as (...a: unknown[]) => unknown)(caminho, ...resto);
+  }) as typeof fsp.readdir);
+  syncBuiltinESMExports();
+  t.after(() => syncBuiltinESMExports()); // t.mock restaura o método; isto restaura os exports nomeados
+
+  await coletor.executar();
+  assert.ok(falhou);
+  assert.equal(coletor.estado.motivoParada, 'concluída');
+  assert.equal(manifest.secao(S77)!.status, 'completa');
+  const quarentena = await readdir(path.join(dados, 'quarentena'));
+  assert.equal(quarentena.length, 1);
+  assert.match(quarentena[0]!, /^AC-3220-01066-\d+$/);
+  assert.ok((await readdir(path.join(dados, 'quarentena', quarentena[0]!), { recursive: true })).length > 0);
+  assert.ok(manifest.eventos(50).some((e) => e.nivel === 'aviso' && /pasta temporária ilegível/.test(e.msg)));
+  assert.ok((await lerZip(path.join(dados, 'raw/AC/3220/01066.zip'))).has(`0004/0077/${FX.hash3220}/${nomeArquivo('3220', 'bu.dat')}`));
 });
 
 test('arquivo que falhou numa execução entra no zip na seguinte', async (t) => {

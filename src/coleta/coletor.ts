@@ -67,6 +67,16 @@ async function gravarAtomico(caminho: string, conteudo: Buffer): Promise<void> {
   await rename(`${caminho}.part`, caminho);
 }
 
+// Erros que o sistema de arquivos dá para uma entrada danificada (NTFS: EINVAL; ext4: EUCLEAN; leitura falha: EIO),
+// só quando o caminho está dentro do staging do município.
+const CODIGOS_ENTRADA_CORROMPIDA = new Set(['EINVAL', 'EUCLEAN', 'EIO']);
+function entradaCorrompida(err: unknown, staging: string): boolean {
+  const { code, path: caminho } = (err ?? {}) as NodeJS.ErrnoException;
+  if (!CODIGOS_ENTRADA_CORROMPIDA.has(code ?? '') || !caminho) return false;
+  const rel = path.relative(staging, caminho);
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 async function existe(caminho: string): Promise<boolean> {
   try {
     await access(caminho);
@@ -422,17 +432,24 @@ export class Coletor extends EventEmitter {
     if (!municipio) return;
     this.estado.municipioAtual = `${mun} ${municipio.nome}`;
     const staging = this.#pastaStaging(pleito, uf, mun);
-    let interrompido = false;
-    await emParalelo(this.manifest.secoesPendentes(pleito, uf, mun), this.concorrencia * 2, async (s) => {
-      if (this.#deveParar(uf)) {
-        interrompido = true;
-        return;
-      }
-      await this.#garantirEspaco();
-      await this.processarSecao(s);
-    });
-    if (interrompido) return; // o staging fica para a próxima execução; não empacota pela metade
-    const noStaging = await this.#conferirStaging(pleito, uf, mun, staging);
+    let noStaging: number;
+    try {
+      let interrompido = false;
+      await emParalelo(this.manifest.secoesPendentes(pleito, uf, mun), this.concorrencia * 2, async (s) => {
+        if (this.#deveParar(uf)) {
+          interrompido = true;
+          return;
+        }
+        await this.#garantirEspaco();
+        await this.processarSecao(s);
+      });
+      if (interrompido) return; // o staging fica para a próxima execução; não empacota pela metade
+      noStaging = await this.#conferirStaging(pleito, uf, mun, staging);
+    } catch (err) {
+      if (retentativa || !entradaCorrompida(err, staging)) throw err;
+      await this.#porEmQuarentena(pleito, uf, mun, staging, err);
+      return this.#coletarMunicipio(pleito, uf, mun, true);
+    }
     if (noStaging === 0) { // nada novo para o zip
       await rm(staging, { recursive: true, force: true });
       return;
@@ -452,6 +469,17 @@ export class Coletor extends EventEmitter {
       return this.#coletarMunicipio(pleito, uf, mun, true);
     }
     this.manifest.marcarEmpacotado(pleito, uf, mun, bytes);
+  }
+
+  // Staging com entrada corrompida no disco (ex.: HD desconectado no meio da gravação): o sistema de arquivos
+  // recusa ler ou gravar ali. A pasta do município vai inteira para quarentena/ (nada é apagado) e a conferência,
+  // ao achar o staging vazio, devolve para 'erro' as seções cujos arquivos não estão no zip; elas são baixadas de novo.
+  async #porEmQuarentena(pleito: string, uf: string, mun: string, staging: string, err: unknown): Promise<void> {
+    await garantirVolume(this.pastaDados); // HD que sumiu não é entrada corrompida
+    const destino = path.join(this.pastaDados, 'quarentena', `${uf.toUpperCase()}-${pleito}-${mun}-${this.agora()}`);
+    await mkdir(path.dirname(destino), { recursive: true });
+    await rename(staging, destino);
+    this.manifest.registrarEvento('aviso', uf, `${pleito} ${mun}: pasta temporária ilegível (${mensagem(err)}); movida para ${destino} e seções afetadas serão baixadas de novo`);
   }
 
   // Antes de empacotar, confere o staging com o manifest e o manifest com staging + zip.
