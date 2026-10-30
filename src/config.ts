@@ -1,7 +1,9 @@
+import os from 'node:os';
 import path from 'node:path';
 
 export const PADRAO = {
-  hd: process.env.TSE_HD ?? '/media/guilherme/Novo volume',
+  // pasta onde salvar (escolhida no painel; os dados ficam em <hd>/tse<ano>); padrão: a pasta pessoal
+  hd: process.env.TSE_HD ?? os.homedir(),
   base: process.env.TSE_BASE ?? 'https://resultados.tse.jus.br',
   ambiente: 'oficial',
   concorrencia: 4,

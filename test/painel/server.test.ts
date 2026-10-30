@@ -213,3 +213,16 @@ test('pastas: lista, cria com cabeçalho e devolve 400 para caminho inválido', 
   assert.equal(((await r.json()) as { caminho: string }).caminho, path.join(raiz, 'nova'));
   assert.equal((await criar(HJ)).status, 400);
 });
+
+test('encerrar: só com o cabeçalho e quando o painel recebeu a função de encerramento', async (t) => {
+  assert.equal((await fetch(`${await subir(t, { obterEstado: async () => ({}) })}/api/encerrar`, { method: 'POST', headers: H })).status, 404);
+  let chamado = 0;
+  const servidor = criarPainel({ controle: falso({ obterEstado: async () => ({}) }), encerrar: () => { chamado++; } });
+  await new Promise<void>((r) => servidor.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise<void>((r) => { servidor.closeAllConnections(); servidor.close(() => r()); }));
+  const base = `http://127.0.0.1:${(servidor.address() as AddressInfo).port}`;
+  assert.equal((await fetch(`${base}/api/encerrar`, { method: 'POST' })).status, 403);
+  assert.equal((await fetch(`${base}/api/encerrar`, { method: 'POST', headers: H })).status, 202);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(chamado, 1);
+});

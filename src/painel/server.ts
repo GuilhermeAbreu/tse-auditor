@@ -116,12 +116,13 @@ async function aplicarConfig(req: Req, res: Res, controle: ControlePainel): Prom
 // Painel local: página estática, estado em JSON, estado ao vivo por SSE, configuração e controles da coleta.
 // Só aceita Host/Origin locais e POST com cabeçalho próprio (defesa contra CSRF e DNS rebinding).
 export function criarPainel({
-  controle, fila = new FilaAnalise({ turnosDe: turnosPelasEleicoes(controle.eleicoes) }), preferencias = caminhoPreferencias(), servico = false,
+  controle, fila = new FilaAnalise({ turnosDe: turnosPelasEleicoes(controle.eleicoes) }), preferencias = caminhoPreferencias(), servico = false, encerrar,
 }: {
   controle: ControlePainel;
   fila?: FilaAnalise;
   preferencias?: string; // arquivo de preferências do aplicativo
   servico?: boolean; // rodando como serviço do sistema (o painel pergunta se a coleta deve começar sozinha)
+  encerrar?: () => void; // POST /api/encerrar: parada limpa pedida pelo script do serviço (no Windows não há Ctrl-C)
 }): ServidorPainel {
   const obterEstado = () => controle.obterEstado();
   const dados = () => controle.configuracao()?.dados ?? null;
@@ -166,6 +167,12 @@ export function criarPainel({
         });
       }
       if (req.method === 'POST' && pathname === '/api/config') return aplicarConfig(req, res, controle);
+      if (req.method === 'POST' && pathname === '/api/encerrar') {
+        if (!encerrar) return json(res, 404, { erro: 'não encontrado' });
+        json(res, 202, { ok: true });
+        setImmediate(encerrar);
+        return;
+      }
       if (pathname === '/api/pastas' && (req.method === 'GET' || req.method === 'POST')) {
         try {
           if (req.method === 'GET') return json(res, 200, await listarPastas(new URL(req.url!, 'http://localhost').searchParams.get('caminho')));

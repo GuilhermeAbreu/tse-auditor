@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.18"
   },
   "bin": {
     "tse-auditor": "src/cli.ts"
@@ -12,7 +12,7 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "tipos": "tsc && tsc -p src/painel/public",
-    "servico": "bash scripts/servico.sh"
+    "servico": "node scripts/servico.ts"
   },
   "dependencies": {
     "@duckdb/node-api": "^2.0.0-r.1",

@@ -9,7 +9,7 @@ Toda a análise é feita por código determinístico: os mesmos arquivos geram s
 ## Sumário
 
 - [Requisitos](#requisitos)
-- [Início rápido](#início-rápido)
+- [Instalação](#instalação)
 - [Rodar em segundo plano](#rodar-em-segundo-plano)
 - [Como funciona](#como-funciona)
 - [Painel web](#painel-web)
@@ -25,43 +25,78 @@ Toda a análise é feita por código determinístico: os mesmos arquivos geram s
 
 ## Requisitos
 
-- **Node.js 22.12 ou superior.** O Node executa os arquivos `.ts` diretamente, sem etapa de build.
+- **Linux ou Windows 10/11** (64 bits). O serviço em segundo plano existe para os dois; outros sistemas rodam o painel pelo terminal.
+- **Node.js 22.18 ou superior** (LTS 22 ou 24). O Node executa os arquivos `.ts` diretamente, sem etapa de build.
+- **Git** para baixar o projeto (ou baixe o ZIP pelo GitHub).
 - **Espaço em disco:** cerca de 202 KB por seção e por turno. As eleições gerais de 2026 nos dois turnos ocupam **~190 GB**. Recomenda-se um HD externo.
 - Acesso à internet para `resultados.tse.jus.br`.
 
-## Início rápido
+## Instalação
+
+### Linux
 
 ```bash
+# Node.js 22.18+ (pelo nvm, por exemplo: https://github.com/nvm-sh/nvm)
+nvm install 22
+
+git clone https://github.com/GuilhermeAbreu/tse-auditor.git
+cd tse-auditor
 npm install
 node src/cli.ts painel
 ```
 
-Abra **http://localhost:3005**, escolha os pleitos e as UFs na seção **Configuração** e clique em **Aplicar e iniciar**. A coleta acompanha o progresso ao vivo. Quando uma UF termina, a extração e a análise rodam automaticamente, e o resultado aparece na aba **Análise**.
+### Windows
 
-Para ver quais eleições existem:
+1. Instale o **Node.js LTS** (22 ou 24) pelo instalador oficial em https://nodejs.org (deixe marcada a opção de adicionar ao PATH) e o **Git** em https://git-scm.com.
+2. Abra o **PowerShell** (não precisa ser como administrador) e rode:
 
-```bash
-node src/cli.ts eleicoes
+```powershell
+git clone https://github.com/GuilhermeAbreu/tse-auditor.git
+cd tse-auditor
+npm install
+node src/cli.ts painel
 ```
+
+Se o `npm install` reclamar de compilação do `better-sqlite3`, falta o pacote pronto para a sua versão do Node: use uma versão LTS do Node ou instale as "Ferramentas para módulos nativos" oferecidas pelo instalador do Node.
+
+### Primeiro uso (os dois sistemas)
+
+Abra **http://localhost:3005** e, em **Configuração**:
+
+1. Escolha os pleitos e as UFs.
+2. Em **Pasta onde salvar os arquivos**, clique em **Escolher…** e selecione o HD ou a pasta (o padrão é a pasta pessoal). Os dados ficam numa subpasta `tse<ano>` dentro dela.
+3. Clique em **Aplicar e iniciar**.
+
+A coleta mostra o progresso ao vivo. Quando uma UF termina, a extração e a análise rodam automaticamente, e o resultado aparece na aba **Análise**. Para ver quais eleições existem: `node src/cli.ts eleicoes`.
 
 ## Rodar em segundo plano
 
-No Linux, o TSE Auditor pode ser instalado como serviço do usuário (systemd). Ele sobe no login, volta se cair, segue coletando com o navegador fechado e ganha o atalho **TSE Auditor** no menu de aplicativos, que abre o painel.
+O TSE Auditor pode ficar rodando em segundo plano: sobe sozinho quando você entra no computador, volta se cair, segue coletando com o navegador fechado e ganha o atalho **TSE Auditor** no menu de aplicativos (Linux) ou no Menu Iniciar (Windows), que abre o painel. Os comandos são os mesmos nos dois sistemas:
 
 ```bash
 npm run servico -- instalar    # cria o serviço e o atalho, e inicia (feche antes um painel aberto no terminal)
 npm run servico -- status      # está rodando?
 npm run servico -- logs        # acompanha as mensagens
-npm run servico -- parar       # encerra como o Ctrl-C: termina as seções em andamento e grava o manifesto
+npm run servico -- parar       # encerra como o Ctrl+C: termina as seções em andamento e grava o manifesto
 npm run servico -- iniciar
+npm run servico -- reiniciar
 npm run servico -- remover     # tira o serviço e o atalho (dados e configuração ficam)
 ```
 
-- **Coleta ao ligar:** na primeira vez, o painel pergunta se a coleta deve continuar sozinha quando o serviço subir. A resposta fica em `~/.config/tse-auditor/preferencias.json` e pode ser trocada em **Configuração › Ao ligar o computador**. Se a resposta for não, o painel sobe com a configuração salva, e a coleta só começa quando você clicar em iniciar.
-- **HD externo:** se o serviço subir antes de o HD montar, ele espera (tenta a cada 15 s) e não cria nada no disco interno.
-- **Porta e HD:** `TSE_PORTA` e `TSE_HD` no momento do `instalar` mudam a porta (padrão 3005) e o HD padrão.
-- **Arquivos instalados:** `~/.config/systemd/user/tse-auditor.service` e `~/.local/share/applications/tse-auditor.desktop`. O serviço usa o `node` que estava no PATH na instalação; ao trocar de versão do Node, rode `instalar` de novo.
-- **Sem estar logado:** para coletar mesmo sem sessão aberta, rode uma vez `loginctl enable-linger $USER`.
+- **Coleta ao ligar:** na primeira vez, o painel pergunta se a coleta deve continuar sozinha quando o serviço subir. A resposta fica em `preferencias.json`, ao lado da configuração salva, e pode ser trocada em **Configuração › Ao ligar o computador**. Se a resposta for não, o painel sobe com a configuração salva, e a coleta só começa quando você clicar em iniciar.
+- **HD externo:** se o serviço subir antes de o HD aparecer, ele espera (tenta a cada 15 s) e não cria nada em outro disco.
+- **Porta:** `TSE_PORTA` no momento do `instalar` muda a porta (padrão 3005).
+- **Versão do Node:** o serviço usa o `node` que estava no PATH na instalação; ao trocar de versão, rode `instalar` de novo.
+
+| | Linux | Windows |
+|---|---|---|
+| Como roda | serviço do usuário no systemd | tarefa "TSE Auditor" no Agendador de Tarefas, sem janela |
+| Arquivos instalados | `~/.config/systemd/user/tse-auditor.service` e `~/.local/share/applications/tse-auditor.desktop` | tarefa agendada e `TSE Auditor.lnk` no Menu Iniciar |
+| Logs | `journalctl --user -u tse-auditor` | `%LOCALAPPDATA%\tse-auditor\tse-auditor.log` |
+| Configuração salva | `~/.config/tse-auditor/` | `%USERPROFILE%\.config\tse-auditor\` |
+| Sem sessão aberta | `loginctl enable-linger $USER` (uma vez) | só com o usuário logado |
+
+No Windows, a parada é pedida ao próprio painel (`/api/encerrar`), que termina as seções em andamento antes de sair; só se ele não responder em 2 minutos o processo é encerrado à força.
 
 ## Como funciona
 
@@ -151,7 +186,7 @@ Tudo pode ser ajustado pelo painel; a última configuração aplicada fica em `~
 | Espaço livre mínimo | 20 GB | Abaixo disso a coleta para. |
 | Gravação do manifest | 1 s | Intervalo de confirmação das gravações em lote. |
 | Atualização do painel | 2 s | |
-| Pasta onde salvar | `/media/guilherme/Novo volume` | Pasta raiz; os dados ficam em `<pasta>/tse<ano>`. Precisa existir ao aplicar. Padrão também pela variável `TSE_HD`. Trocar não move os dados já baixados: a coleta recomeça na nova pasta. |
+| Pasta onde salvar | pasta pessoal | Pasta raiz; os dados ficam em `<pasta>/tse<ano>`. Precisa existir ao aplicar. Padrão também pela variável `TSE_HD`. Trocar não move os dados já baixados: a coleta recomeça na nova pasta. |
 | Analisar ao concluir | ligado | Extrai e analisa a UF assim que a coleta dela termina. |
 
 A fonte de dados (`https://resultados.tse.jus.br`) não é editável pelo painel: só fontes oficiais são aceitas.
@@ -236,9 +271,11 @@ src/
 ├── painel/                 servidor HTTP, API de análise e dos gráficos (graficos.ts) e página web
 └── tipos/                  tipos do domínio e dos formatos do TSE
 scripts/
-├── servico.sh              instala e controla o serviço do usuário (systemd) e o atalho
+├── servico.ts              npm run servico: chama o script do sistema
+├── servico.sh              serviço no Linux (systemd do usuário) e atalho
+├── servico.ps1             serviço no Windows (Agendador de Tarefas) e atalho
 └── baixar-fixtures.sh      baixa de novo as fixtures reais do TSE
-assets/tse-auditor.svg      ícone do atalho
+assets/                    ícone do atalho (.svg no Linux, .ico no Windows)
 docs/
 ├── specs/                  desenho do sistema
 ├── planos/                 planos de implementação e divergências

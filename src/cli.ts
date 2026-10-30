@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { setTimeout as espera } from 'node:timers/promises';
-import { parseArgs } from 'node:util';
+import { appendFileSync, renameSync, statSync } from 'node:fs';
+import { format, parseArgs } from 'node:util';
 import { PADRAO, pastaDados } from './config.ts';
-import { configInicial, lerConfigSalva } from './configSalva.ts';
+import { caminhoConfigSalva, configInicial, lerConfigSalva } from './configSalva.ts';
 import { caminhoPreferencias, lerPreferencias } from './preferencias.ts';
 import { VolumeError } from './storage/disco.ts';
 import { UFS } from './ufs.ts';
@@ -25,6 +26,7 @@ interface OpcoesCli {
   turnos?: string;
   'sem-iniciar'?: boolean;
   servico?: boolean;
+  log?: string;
 }
 
 const mensagem = (err: unknown) => (err as Error).message;
@@ -32,7 +34,7 @@ const mensagem = (err: unknown) => (err as Error).message;
 const AJUDA = `uso:
   tse-auditor eleicoes
   tse-auditor coletar --pleito 3220,3221 [--uf ac,al] [--dados <pasta>] [--concorrencia 4]
-  tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3005] [--sem-iniciar] [--servico]
+  tse-auditor painel  [--pleito 3220,3221] [--uf ac,al] [--dados <pasta>] [--concorrencia 4] [--porta 3005] [--sem-iniciar] [--servico] [--log <arquivo>]
   tse-auditor extrair --uf ac [--pleito 3220,3221] [--dados <pasta>]   (BU/RDV/log -> parquet/<UF>/)
   tse-auditor analisar --uf ac [--dados <pasta>] [--turnos 3220,3221]  (cruzamentos -> parquet/<UF>/achados.parquet)
     sem --turnos, o 1º/2º turno sai do ele-c.json (pleitos presentes nos Parquet); "--turnos 3220" = só um turno
@@ -140,7 +142,15 @@ async function painel(controle: ControleColeta, opcoes: OpcoesCli): Promise<void
   }
 
   const porta = opcoes.porta ?? PADRAO.porta;
-  const servidor = criarPainel({ controle, preferencias: caminhoPreferencias(controle.arquivoConfig), servico: !!opcoes.servico });
+  // Encerramento limpo (Ctrl-C, SIGTERM ou POST /api/encerrar): termina as seções em andamento e grava o manifesto.
+  let encerrando = false;
+  const encerrar = async () => {
+    if (encerrando) return;
+    encerrando = true;
+    await controle.fechar();
+    process.exit(0);
+  };
+  const servidor = criarPainel({ controle, preferencias: caminhoPreferencias(controle.arquivoConfig), servico: !!opcoes.servico, encerrar });
   try {
     await new Promise<void>((resolve, reject) => {
       servidor.once('error', reject);
@@ -153,15 +163,39 @@ async function painel(controle: ControleColeta, opcoes: OpcoesCli): Promise<void
   if (!controle.configuracao() && !(inicial && opcoes.servico)) console.log('sem configuração: escolha pleitos e UFs no painel');
   console.log(`painel em http://localhost:${(servidor.address() as AddressInfo).port}`);
   if (inicial && opcoes.servico) void aplicarComoServico(controle, inicial.config);
-  tratarCtrlC(controle, async () => {
-    await controle.fechar();
-    process.exit(0);
-  });
+  tratarCtrlC(controle, () => void encerrar());
+}
+
+// Sem --dados: a pasta escolhida no painel (configuração salva), senão o padrão.
+async function dadosPadrao(): Promise<string> {
+  const salva = await lerConfigSalva(caminhoConfigSalva()).catch(() => null);
+  return pastaDados(typeof salva?.hd === 'string' && salva.hd ? salva.hd : PADRAO.hd, 'ele2026');
+}
+
+// --log <arquivo>: também grava as mensagens num arquivo (o serviço do Windows roda sem janela). Acima de 10 MB,
+// o arquivo vira <arquivo>.1 ao iniciar.
+function gravarLog(arquivo: string): void {
+  try {
+    if (statSync(arquivo).size > 10 * 1024 ** 2) renameSync(arquivo, `${arquivo}.1`);
+  } catch {
+    // ainda não existe
+  }
+  for (const nivel of ['log', 'error'] as const) {
+    const original = console[nivel].bind(console);
+    console[nivel] = (...partes: unknown[]) => {
+      original(...partes);
+      try {
+        appendFileSync(arquivo, `${new Date().toISOString()} ${format(...partes)}\n`);
+      } catch {
+        // log indisponível: segue só no console
+      }
+    };
+  }
 }
 
 async function extrair(opcoes: OpcoesCli): Promise<void> {
   if (!opcoes.uf) throw new Error('informe --uf');
-  const dados = opcoes.dados ?? pastaDados(PADRAO.hd, 'ele2026');
+  const dados = opcoes.dados ?? (await dadosPadrao());
   for (const uf of lista(opcoes.uf)) {
     const inicio = Date.now();
     const stats = await extrairUF({
@@ -175,7 +209,7 @@ async function extrair(opcoes: OpcoesCli): Promise<void> {
 
 async function analisar(opcoes: OpcoesCli): Promise<void> {
   if (!opcoes.uf) throw new Error('informe --uf');
-  const dados = opcoes.dados ?? pastaDados(PADRAO.hd, 'ele2026');
+  const dados = opcoes.dados ?? (await dadosPadrao());
   let turnos: Turnos | undefined;
   let eleicoes: Eleicoes | undefined;
   if (opcoes.turnos !== undefined) {
@@ -216,9 +250,11 @@ async function main(argv: string[]): Promise<void> {
       turnos: { type: 'string' },
       'sem-iniciar': { type: 'boolean' },
       servico: { type: 'boolean' },
+      log: { type: 'string' },
     },
   });
   const opcoes: OpcoesCli = { ...values, concorrencia: undefined, porta: undefined };
+  if (opcoes.log) gravarLog(opcoes.log);
   const [comando = ''] = positionals;
   if (!['eleicoes', 'coletar', 'painel', 'extrair', 'analisar'].includes(comando)) {
     console.log(AJUDA);
