@@ -3,9 +3,9 @@
 /**
  * Elementos com tipo específico usados pelo painel (os demais são HTMLElement).
  * @typedef {{
- *   configuracao: HTMLDetailsElement, 'btn-iniciar': HTMLButtonElement, 'btn-parar': HTMLButtonElement,
- *   'cfg-concorrencia': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLSelectElement,
- *   'an-sinal': HTMLSelectElement, 'an-modal': HTMLDialogElement, 'an-ranking': HTMLTableElement,
+ *   'btn-iniciar': HTMLButtonElement, 'btn-parar': HTMLButtonElement,
+ *   'cfg-concorrencia': HTMLInputElement, 'form-config': HTMLFormElement, 'an-uf': HTMLInputElement,
+ *   'an-sinal': HTMLSelectElement, 'an-modal': HTMLDialogElement, 'gl-modal': HTMLDialogElement, 'an-ranking': HTMLTableElement,
  * }} Ids
  */
 
@@ -90,19 +90,27 @@ function fmtBytes(b) {
 
 /** @param {UfEstado} u */
 function linhaUf(u) {
-  const pct = u.total ? Math.floor(((u.concluidas + u.erros) / u.total) * 100) : 0;
+  const feitas = u.concluidas + u.erros;
+  const pct = u.total ? Math.floor((feitas / u.total) * 100) : 0;
   const acao = u.pausada ? 'iniciar' : 'pausar';
-  return `<tr class="${esc(u.status)}">
-    <td>${esc(u.uf.toUpperCase())}</td>
-    <td>${esc(ROTULO[u.status] ?? u.status)}</td>
-    <td>${num(u.concluidas)} / ${num(u.total)}</td>
-    <td><progress max="100" value="${pct}"></progress> ${pct}%</td>
-    <td>${u.erros ? `<b class="erro">${num(u.erros)}</b>` : '0'}</td>
-    <td>${num(u.semArquivos)}</td>
-    <td title="arquivo listado no índice do TSE mas não publicado; não afeta a análise">${num(u.indisponiveis ?? 0)}</td>
-    <td>${fmtBytes(u.bytes)}</td>
-    <td><button data-uf="${esc(u.uf)}" data-acao="${acao}" title="${u.pausada ? 'retoma a coleta (todas as UFs não pausadas)' : 'pausa esta UF'}">${u.pausada ? 'Retomar' : 'Pausar'}</button></td>
-  </tr>`;
+  const dica = [`${num(u.erros)} com erro`, `${num(u.semArquivos)} sem dados`,
+    `${num(u.indisponiveis ?? 0)} não publicados (listados no índice do TSE, mas ausentes; não afetam a análise)`,
+    `${fmtBytes(u.bytes)} baixados`].join('\n');
+  const botao = el('button', { type: 'button', className: 'pequeno', textContent: u.pausada ? 'Retomar' : 'Pausar',
+    title: u.pausada ? 'retoma a coleta (todas as UFs não pausadas)' : 'pausa esta UF' });
+  botao.dataset.uf = u.uf;
+  botao.dataset.acao = acao;
+  const extras = [el('span', { textContent: `${fmtBytes(u.bytes)} · ${num(u.semArquivos)} sem dados` })];
+  if (u.erros) extras.push(el('span', { className: 'selo erro', textContent: `${num(u.erros)} erros`, title: 'seções com erro' }));
+  if (u.indisponiveis) extras.push(el('span', { className: 'selo aviso', textContent: `${num(u.indisponiveis)} não publicados`, title: 'listados no índice do TSE mas não publicados; não afeta a análise' }));
+  return el('tr', { className: u.status, title: dica },
+    el('td', { className: 'uf', textContent: u.uf.toUpperCase() }),
+    el('td', {}, el('span', { className: `status st-${u.status}`, textContent: ROTULO[u.status] ?? u.status })),
+    el('td', { className: 'progresso' },
+      el('div', { className: 'linha-prog' }, el('progress', { max: 100, value: pct }), el('span', { className: 'pct', textContent: `${pct}%` })),
+      el('div', { className: 'extras' }, ...extras)),
+    el('td', { className: 'num', textContent: `${num(u.concluidas)} / ${num(u.total)}` }),
+    el('td', {}, botao));
 }
 
 /** @type {Estado | null} */
@@ -113,32 +121,42 @@ function render(e) {
   ultimoEstado = e;
   const c = e.coleta;
   const semConfig = !e.configuracao;
-  if (semConfig) $('configuracao').open = true;
-  $('situacao').textContent = e.manifestErro
-    ? `Manifest com erro de gravação (HD desconectado?): ${e.manifestErro}`
-    : semConfig
+  if (semConfig && !location.hash) trocarAba('configuracao');
+  const parcial = [`${num(e.totais.concluidas)} / ${num(e.totais.secoes)} seções`, fmtBytes(e.totais.bytes), `${fmtBytes(c.velocidadeBps)}/s`];
+  $('situacao').textContent = semConfig
     ? 'Sem configuração: escolha pleitos e UFs em "Configuração" e aplique'
     : c.rodando
-    ? `Coletando ${c.ufAtual?.toUpperCase() ?? ''} ${c.municipioAtual ?? ''}`
-    : `Parada${c.motivoParada ? `: ${c.motivoParada}` : ''}`;
-  $('situacao').classList.toggle('erro', Boolean(e.manifestErro));
+    ? [`Coletando ${c.ufAtual?.toUpperCase() ?? ''}${c.municipioAtual ? ` ${c.municipioAtual}` : ''}`, ...parcial].join(' · ')
+    : `Parada${c.motivoParada ? `: ${c.motivoParada}` : ''} · ${parcial.slice(0, 2).join(' · ')}`;
+  $('situacao').classList.remove('erro');
+  $('manifest-erro').hidden = !e.manifestErro;
+  $('manifest-erro').textContent = e.manifestErro ? `Manifest com erro de gravação (HD desconectado?): ${e.manifestErro}` : '';
   $('btn-iniciar').hidden = c.rodando || semConfig;
   $('btn-parar').hidden = !c.rodando;
   $('btn-iniciar').disabled = c.rodando;
   $('btn-parar').disabled = !c.rodando;
-  $('velocidade').textContent = `${fmtBytes(c.velocidadeBps)}/s`;
+  $('velocidade').textContent = c.velocidadeBps == null ? '—' : `${fmtBytes(c.velocidadeBps)}/s`;
   $('baixado').textContent = fmtBytes(e.totais.bytes);
-  $('projecao').textContent = e.disco.projecaoBytes == null
-    ? '—'
-    : `${fmtBytes(e.disco.projecaoBytes)}${e.disco.projecaoPreliminar ? ' (preliminar)' : ''}`;
+  $('projecao').textContent = fmtBytes(e.disco.projecaoBytes);
+  $('projecao-nota').textContent = e.disco.projecaoPreliminar ? 'preliminar' : '\u00a0';
   $('livre').textContent = fmtBytes(e.disco.livres);
+  $('secoes-pct').textContent = e.totais.secoes ? `${Math.floor((e.totais.concluidas / e.totais.secoes) * 100)}%` : '—';
   $('secoes').textContent = `${num(e.totais.concluidas)} / ${num(e.totais.secoes)}`;
-  $('ufs').innerHTML = e.ufs.map(linhaUf).join('');
-  $('erros').innerHTML = (e.gruposErros ?? []).map((g) =>
-    `<details class="grupo-erro"><summary><span class="selo">${num(g.n)}</span> ${esc(g.causa)}</summary><ul>${g.exemplos.map((s) =>
-      `<li>${esc(s.uf.toUpperCase())} ${esc(s.pleito)} mun ${esc(s.mun)} zona ${esc(s.zona)} seção ${esc(s.secao)}</li>`).join('')}</ul></details>`).join('');
-  $('eventos').innerHTML = e.eventos.map((ev) =>
-    `<li class="${esc(ev.nivel)}"><time>${esc(new Date(ev.ts).toLocaleString('pt-BR'))}</time> ${esc(ev.uf?.toUpperCase() ?? '')} ${esc(ev.msg)}</li>`).join('');
+  $('ufs').replaceChildren(...e.ufs.map(linhaUf));
+  const grupos = e.gruposErros ?? [];
+  const nErros = grupos.reduce((t, g) => t + g.n, 0);
+  $('erros-bloco').hidden = grupos.length === 0;
+  $('erros-resumo').textContent = `Ver erros (${num(nErros)})`;
+  $('erros').replaceChildren(...grupos.map((g) =>
+    el('details', { className: 'grupo-erro' },
+      el('summary', {}, el('span', { className: 'selo erro', textContent: num(g.n) }), ` ${g.causa}`),
+      el('ul', {}, ...g.exemplos.map((s) =>
+        el('li', { textContent: `${s.uf.toUpperCase()} ${s.pleito} mun ${s.mun} zona ${s.zona} seção ${s.secao}` }))))));
+  $('eventos-resumo').textContent = `Ver eventos (${num(e.eventos.length)})`;
+  $('eventos').replaceChildren(...e.eventos.map((ev) =>
+    el('li', { className: ev.nivel }, el('time', { textContent: new Date(ev.ts).toLocaleString('pt-BR') }),
+      ` ${ev.uf?.toUpperCase() ?? ''} ${ev.msg}`)));
+  renderAnaliseUfs();
 }
 
 /** @param {string} msg */
@@ -167,6 +185,26 @@ document.addEventListener('click', async (ev) => {
   botao.disabled = true;
   if (!(await enviar(caminho))) botao.disabled = false;
 });
+
+// ---- abas (#coleta, #analise, #configuracao) ----
+
+const ABAS = ['coleta', 'analise', 'configuracao'];
+/** @param {string} aba */
+function trocarAba(aba) {
+  if (!ABAS.includes(aba)) aba = 'coleta';
+  for (const a of ABAS) {
+    $(`aba-${a}`).hidden = a !== aba;
+    document.querySelector(`[data-aba="${a}"]`)?.classList.toggle('ativa', a === aba);
+  }
+  if (location.hash !== `#${aba}`) history.replaceState(null, '', `#${aba}`);
+  try { localStorage.setItem('aba', aba); } catch { /* sem armazenamento */ }
+}
+window.addEventListener('hashchange', () => trocarAba(location.hash.slice(1)));
+{
+  let guardada = '';
+  try { guardada = localStorage.getItem('aba') ?? ''; } catch { /* sem armazenamento */ }
+  trocarAba(location.hash.slice(1) || guardada);
+}
 
 // ---- configuração ----
 
@@ -299,7 +337,6 @@ function renderConfig() {
   $('cfg-resumo').textContent = atual
     ? `pleitos ${atual.pleitos.join(', ')} · ${atual.ufs.length === disponiveis.ufs.length ? 'todas as UFs' : atual.ufs.map((u) => u.toUpperCase()).join(', ')} · concorrência ${atual.concorrencia}`
     : 'nenhuma';
-  if (!atual) $('configuracao').open = true;
 }
 
 function avisarConcorrencia() {
@@ -465,12 +502,20 @@ const badgeExp = (c) => el('span', { className: 'badge explicacao', textContent:
 const listaExp = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/[,;]\s*/)).filter(Boolean);
 /** @param {string[]} codigos @param {(c: string) => Node} f */
 const tdBadges = (codigos, f) => el('td', {}, ...(codigos.length ? codigos.map(f) : [document.createTextNode('—')]));
+/** No máximo 2 badges; o resto vira "+n" com os nomes no tooltip. Vazio: "Nenhuma" (vermelho suave) ou "—".
+ * @param {string[]} codigos @param {(c: string) => Node} f @param {(c: string) => string} nome @param {boolean} [avisaVazio] */
+function tdLimitado(codigos, f, nome, avisaVazio = false) {
+  if (!codigos.length) return el('td', {}, el('span', { className: avisaVazio ? 'nenhuma' : 'dica', textContent: avisaVazio ? 'Nenhuma' : '—' }));
+  const resto = codigos.slice(2);
+  return el('td', { className: 'badges' }, ...codigos.slice(0, 2).map(f),
+    ...(resto.length ? [el('span', { className: 'mais', textContent: `+${resto.length}`, title: resto.map(nome).join('\n') })] : []));
+}
 
 function desenharGlossario() {
   /** @param {Node} badge @param {string} texto */
   const linha = (badge, texto) => el('li', {}, badge, document.createTextNode(` ${texto}`));
   $('an-glossario').replaceChildren(
-    el('summary', { textContent: 'Glossário: sinais e explicações candidatas' }),
+    el('h3', { textContent: 'Glossário: sinais e explicações candidatas' }),
     el('p', { className: 'dica', textContent: 'Pontuação máx.: 0–100, quanto a seção foge do padrão das vizinhas/zona/outro turno (10 × distância estatística robusta, limitado a 100; até ~30 é variação comum, acima de ~50 é bem fora do normal). Números pequenos (poucos eleitores) pedem cautela. Explicações candidatas são causas técnicas normais detectadas nos dados que podem explicar o sinal.' }),
     ...Object.entries(GRUPOS).map(([g, nome]) => el('div', {}, el('h4', { textContent: nome }),
       el('ul', {}, ...Object.entries(SINAIS).filter(([, v]) => v[0] === g).map(([c, v]) => linha(badgeSinal(c), v[2]))))),
@@ -484,29 +529,37 @@ function renderAnaliseUfs() {
   const dados = new Map(an.ufs.map((u) => [u.uf, u]));
   const todas = [...new Set([...coleta.keys(), ...dados.keys()])].sort();
   const ativo = new Set(an.jobs.jobs.filter((j) => j.estado === 'na fila' || j.estado === 'rodando').map((j) => j.uf));
+  const comAchados = an.ufs.filter((u) => u.achados != null).map((u) => u.uf);
+  if (!comAchados.includes($('an-uf').value)) $('an-uf').value = comAchados[0] ?? '';
   $('an-ufs').replaceChildren(...todas.map((uf) => {
     const d = dados.get(uf);
     const st = coleta.get(uf);
     const pronta = st === 'baixado' || st === 'baixado_com_erros';
-    const botao = el('button', { type: 'button', textContent: ativo.has(uf) ? 'Na fila…' : 'Extrair e analisar',
+    const job = an.jobs.jobs.filter((j) => j.uf === uf).at(-1);
+    const analisada = d?.achados != null;
+    const botao = el('button', { type: 'button', className: 'pequeno', textContent: ativo.has(uf) ? 'Na fila…' : analisada ? 'Reanalisar' : 'Extrair e analisar',
       disabled: !pronta || ativo.has(uf), title: pronta ? 'roda extrair e depois analisar para a UF' : 'disponível quando a coleta da UF termina' });
     botao.dataset.analisar = uf;
-    return el('tr', {}, td(uf.toUpperCase()), td(ROTULO[/** @type {string} */ (st)] ?? st ?? '—'), td(d ? `${num(d.ok)} ok / ${num(d.secoes)}` : null),
-      td(d?.achados != null ? num(d.achados) : null), td(d?.secoesComAchados != null ? num(d.secoesComAchados) : null),
-      td(d?.analisadoEm ? new Date(d.analisadoEm).toLocaleString('pt-BR') : null), el('td', {}, botao));
+    const estadoJob = job && (job.estado === 'rodando' || job.estado === 'erro' || job.estado === 'na fila')
+      ? el('div', { className: `job${job.estado === 'erro' ? ' erro' : ''}`,
+        textContent: `${job.estado}${job.etapa && job.estado === 'rodando' ? ` (${job.etapa})` : ''}${job.progresso && job.estado === 'rodando' ? ` · ${job.progresso}` : ''}${job.erro ? ` · ${job.erro}` : ''}` })
+      : null;
+    const cartao = el('div', { className: `cartao-uf${uf === $('an-uf').value ? ' sel' : ''}${analisada ? ' analisada' : ''}`,
+      title: d?.analisadoEm ? `${num(d.ok)} ok / ${num(d.secoes)} seções extraídas; ${num(d.achados ?? 0)} achados` : '' },
+      el('div', { className: 'topo-uf' }, el('strong', { textContent: uf.toUpperCase() }),
+        el('span', { className: 'dica', textContent: ROTULO[/** @type {string} */ (st)] ?? st ?? '—' })),
+      el('div', { className: 'destoantes', textContent: d?.secoesComAchados != null ? `${num(d.secoesComAchados)} destoantes` : 'sem análise' }),
+      el('div', { className: 'dica', textContent: d?.analisadoEm ? `analisada em ${new Date(d.analisadoEm).toLocaleString('pt-BR')}` : '\u00a0' }),
+      ...(estadoJob ? [estadoJob] : []), botao);
+    if (analisada) cartao.dataset.escolher = uf;
+    return cartao;
   }));
-  const comAchados = an.ufs.filter((u) => u.achados != null).map((u) => u.uf);
   const atual = $('an-uf').value;
-  $('an-uf').replaceChildren(...comAchados.map((uf) => el('option', { value: uf, textContent: uf.toUpperCase() })));
-  if (comAchados.includes(atual)) $('an-uf').value = atual;
+  $('an-uf-titulo').textContent = atual ? atual.toUpperCase() : '';
   if (!comAchados.length) $('an-msg').textContent = 'nenhuma UF analisada ainda';
 }
 
-function renderJobs() {
-  $('an-jobs').replaceChildren(...an.jobs.jobs.slice().reverse().map((j) => el('li', { className: j.estado === 'erro' ? 'erro' : '',
-    textContent: `${j.uf.toUpperCase()} ${j.estado}${j.etapa && j.estado === 'rodando' ? ` (${j.etapa})` : ''}`
-      + `${j.origem === 'automática' ? ' · automática' : ''}${j.progresso && j.estado === 'rodando' ? ` · ${j.progresso}` : ''}${j.erro ? ` · ${j.erro}` : ''}` })));
-}
+function renderJobs() { renderAnaliseUfs(); }
 
 async function atualizarAnalise() {
   try {
@@ -535,8 +588,14 @@ async function carregarRanking() {
   an.rankingDe = uf;
   $('an-msg').textContent = `${num(r.secoes.length)} seções destoantes${r.secoes.length === 200 ? ' (primeiras 200)' : ''}; clique numa linha para ver os sinais`;
   $('an-ranking').tBodies[0].replaceChildren(...r.secoes.map((s) => {
-    const tr = el('tr', {}, td(s.mun), td(s.zona), td(s.secao), td(String(s.pontuacao)),
-      tdBadges(s.sinais, badgeSinal), tdBadges(listaExp(s.explicacoes), badgeExp));
+    const tr = el('tr', {},
+      el('td', {}, el('div', { className: 'secao-id', textContent: `Seção ${s.secao}` }),
+        el('div', { className: 'dica', textContent: `mun ${s.mun} · zona ${s.zona}` })),
+      el('td', {}, el('div', { className: 'pont' },
+        el('span', { className: 'barra-pont' }, el('i', { style: `width:${Math.max(0, Math.min(100, s.pontuacao))}%` })),
+        el('span', { className: 'num', textContent: String(s.pontuacao) }))),
+      tdLimitado(s.sinais, badgeSinal, (c) => SINAIS[c]?.[1] ?? c),
+      tdLimitado(listaExp(s.explicacoes), badgeExp, (c) => EXPLICACOES[c]?.[0] ?? c, true));
     tr.addEventListener('click', () => {
       for (const o of $('an-ranking').querySelectorAll('tr.sel')) o.classList.remove('sel');
       tr.classList.add('sel');
@@ -732,8 +791,17 @@ $('an-modal-fechar').addEventListener('click', fecharModal);
 $('an-modal').addEventListener('click', (ev) => { if (ev.target === $('an-modal')) fecharModal(); });
 
 $('an-ufs').addEventListener('click', async (ev) => {
-  const b = /** @type {HTMLButtonElement | null} */ (/** @type {Element} */ (ev.target).closest('button[data-analisar]'));
-  if (!b) return;
+  const alvo = /** @type {Element} */ (ev.target);
+  const b = /** @type {HTMLButtonElement | null} */ (alvo.closest('button[data-analisar]'));
+  if (!b) {
+    const c = /** @type {HTMLElement | null} */ (alvo.closest('[data-escolher]'));
+    if (c?.dataset.escolher) {
+      $('an-uf').value = c.dataset.escolher;
+      renderAnaliseUfs();
+      carregarRanking().catch((err) => { $('an-msg').textContent = err.message; });
+    }
+    return;
+  }
   b.disabled = true;
   try {
     await obterJson(`/api/analise/${b.dataset.analisar}/executar`, { method: 'POST', headers: { 'x-tse-auditor': '1' } });
@@ -742,7 +810,9 @@ $('an-ufs').addEventListener('click', async (ev) => {
   }
   atualizarAnalise();
 });
-$('an-uf').addEventListener('change', () => carregarRanking().catch((err) => { $('an-msg').textContent = err.message; }));
+$('btn-glossario').addEventListener('click', () => $('gl-modal').showModal());
+$('gl-modal-fechar').addEventListener('click', () => $('gl-modal').close());
+$('gl-modal').addEventListener('click', (ev) => { if (ev.target === $('gl-modal')) $('gl-modal').close(); });
 $('an-sinal').addEventListener('change', () => carregarRanking().catch((err) => { $('an-msg').textContent = err.message; }));
 atualizarAnalise();
 setInterval(atualizarAnalise, 3000);

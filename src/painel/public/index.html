@@ -7,16 +7,63 @@
   <link rel="stylesheet" href="/estilo.css">
 </head>
 <body>
-  <header>
-    <h1>TSE Auditor</h1>
-    <p><span id="situacao">conectando…</span>
-      <button id="btn-iniciar" data-coleta="iniciar" hidden>Iniciar coleta</button>
-      <button id="btn-parar" data-coleta="parar" hidden>Parar coleta</button></p>
-  </header>
+  <div class="topo">
+    <header class="barra">
+      <h1>TSE Auditor</h1>
+      <span id="situacao" class="situacao">conectando…</span>
+      <button id="btn-iniciar" class="primario" data-coleta="iniciar" hidden>Iniciar coleta</button>
+      <button id="btn-parar" data-coleta="parar" hidden>Parar coleta</button>
+    </header>
+    <div id="manifest-erro" class="faixa-erro" role="alert" hidden></div>
+    <nav class="abas" aria-label="Seções do painel">
+      <a href="#coleta" data-aba="coleta">Coleta</a>
+      <a href="#analise" data-aba="analise">Análise</a>
+      <a href="#configuracao" data-aba="configuracao">Configuração</a>
+    </nav>
+  </div>
 
-  <details id="configuracao">
-    <summary>Configuração <span id="cfg-resumo" class="dica"></span></summary>
-    <form id="form-config">
+  <main>
+  <section id="aba-coleta" class="aba">
+    <div class="cartoes">
+      <div class="cartao"><span>Seções concluídas</span><strong id="secoes-pct">—</strong><small id="secoes">—</small></div>
+      <div class="cartao"><span>Baixado</span><strong id="baixado">—</strong><small id="velocidade">—</small></div>
+      <div class="cartao"><span>Projeção</span><strong id="projecao">—</strong><small id="projecao-nota">&nbsp;</small></div>
+      <div class="cartao"><span>Livre no HD</span><strong id="livre">—</strong><small>&nbsp;</small></div>
+    </div>
+    <div class="rolagem">
+      <table class="tab-ufs">
+        <thead><tr><th>UF</th><th>Status</th><th>Progresso</th><th>Seções</th><th></th></tr></thead>
+        <tbody id="ufs"></tbody>
+      </table>
+    </div>
+    <details id="erros-bloco" class="bloco" hidden><summary id="erros-resumo">Ver erros</summary><div id="erros"></div></details>
+    <details id="eventos-bloco" class="bloco"><summary id="eventos-resumo">Ver eventos</summary><ul id="eventos"></ul></details>
+  </section>
+
+  <section id="aba-analise" class="aba" hidden>
+    <p class="dica intro">Sinais estatísticos e conferências determinísticas sobre BU, RDV e log. Uma seção destoante não é
+      prova de nada: cada uma vem com explicações técnicas candidatas que precisam ser verificadas antes de qualquer conclusão.</p>
+    <div id="an-ufs" class="cartoes-uf"></div>
+    <input type="hidden" id="an-uf">
+    <div class="titulo-ranking">
+      <h2>Ranking de seções destoantes <span id="an-uf-titulo" class="dica"></span></h2>
+      <button type="button" id="btn-glossario" title="Glossário de sinais e explicações">? Glossário</button>
+    </div>
+    <p class="filtros"><label>Sinal <select id="an-sinal"><option value="">todos</option></select></label>
+      <span id="an-msg" class="dica"></span></p>
+    <div class="rolagem">
+      <table id="an-ranking">
+        <thead><tr><th>Seção</th><th>Pontuação</th><th>Sinais</th><th>Explicações</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <dialog id="an-modal"><button id="an-modal-fechar" class="fechar" aria-label="fechar">×</button><div id="an-modal-corpo"></div></dialog>
+    <dialog id="gl-modal"><button id="gl-modal-fechar" class="fechar" aria-label="fechar">×</button><div id="an-glossario"></div></dialog>
+  </section>
+
+  <section id="aba-configuracao" class="aba" hidden>
+    <p class="dica intro">Configuração atual: <span id="cfg-resumo"></span></p>
+    <form class="painel-form" id="form-config">
       <fieldset>
         <legend>Pleitos</legend>
         <p class="dica">Escolha pleitos de um mesmo ciclo (os dados de cada ciclo ficam numa pasta própria).</p>
@@ -44,48 +91,8 @@
       <p><button type="submit" value="aplicar">Aplicar</button>
         <button type="submit" value="iniciar">Aplicar e iniciar</button></p>
     </form>
-  </details>
-
-  <section class="cartoes">
-    <div class="cartao"><span>Velocidade</span><strong id="velocidade">—</strong></div>
-    <div class="cartao"><span>Baixado</span><strong id="baixado">—</strong></div>
-    <div class="cartao"><span>Projeção total</span><strong id="projecao">—</strong></div>
-    <div class="cartao"><span>Livre no HD</span><strong id="livre">—</strong></div>
-    <div class="cartao"><span>Seções</span><strong id="secoes">—</strong></div>
   </section>
-
-  <table>
-    <thead>
-      <tr><th>UF</th><th>Status</th><th>Seções</th><th>Progresso</th><th>Erros</th><th>Sem dados</th><th title="arquivo listado no índice do TSE mas não publicado; não afeta a análise">Não publicados</th><th>Baixado</th><th></th></tr>
-    </thead>
-    <tbody id="ufs"></tbody>
-  </table>
-
-  <section id="analise">
-    <h2>Análise: seções destoantes</h2>
-    <p class="dica">Sinais estatísticos e conferências determinísticas sobre BU, RDV e log. Uma seção destoante não é
-      prova de nada: cada uma vem com explicações técnicas candidatas que precisam ser verificadas antes de qualquer conclusão.</p>
-    <details id="an-glossario" open></details>
-    <table>
-      <thead><tr><th>UF</th><th>Coleta</th><th>Seções extraídas</th><th>Achados</th><th>Seções destoantes</th><th>Analisado em</th><th></th></tr></thead>
-      <tbody id="an-ufs"></tbody>
-    </table>
-    <ul id="an-jobs"></ul>
-    <p><label>UF <select id="an-uf"></select></label>
-      <label>Sinal <select id="an-sinal"><option value="">todos</option></select></label>
-      <span id="an-msg" class="dica"></span></p>
-    <table id="an-ranking">
-      <thead><tr><th>Município</th><th>Zona</th><th>Seção</th><th>Pontuação máx.</th><th>Sinais</th><th>Explicações candidatas</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <dialog id="an-modal"><button id="an-modal-fechar" class="fechar" aria-label="fechar">×</button><div id="an-modal-corpo"></div></dialog>
-  </section>
-
-  <h2>Seções com erro</h2>
-  <div id="erros"></div>
-
-  <h2>Eventos</h2>
-  <ul id="eventos"></ul>
+  </main>
 
   <script type="module" src="/app.js"></script>
 </body>
